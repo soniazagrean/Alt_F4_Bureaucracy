@@ -1,0 +1,1 @@
+# TEDIHT - Smart Document Inspection and Archival System

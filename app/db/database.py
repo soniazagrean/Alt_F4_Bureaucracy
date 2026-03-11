@@ -1,23 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import NullPool
-import os
-from dotenv import load_dotenv
+from app.config import settings
 
-load_dotenv()
-
-# Database URL from environment
-POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "alt_db")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
-
-DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-
-# Create engine
+# Create engine used settings
 engine = create_engine(
-    DATABASE_URL,
+    settings.DATABASE_URL,
     poolclass=NullPool,  # Disable connection pooling for Docker
     echo=False,
 )
@@ -38,4 +26,5 @@ def get_db():
 
 def init_db():
     """Initialize database - create all tables"""
+    from app.models import user, document, audit  # Import models to register them with Base
     Base.metadata.create_all(bind=engine)

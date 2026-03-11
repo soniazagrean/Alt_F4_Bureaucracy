@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.env
+.git
+.gitignore
+*.log
+venv/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+venv/

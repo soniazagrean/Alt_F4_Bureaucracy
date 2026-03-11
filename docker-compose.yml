@@ -1,0 +1,220 @@
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: alt-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-alt_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - alt-network
+
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: alt-neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/password}
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 1024m
+    ports:
+      - "${NEO4J_PORT:-7687}:7687"
+      - "${NEO4J_BROWSER_PORT:-7474}:7474"
+    volumes:
+      - neo4j_data:/var/lib/neo4j/data
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - alt-network
+
+  # Cache & Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: alt-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - alt-network
+
+  # Search Engine
+  meilisearch:
+    image: getmeili/meilisearch:v1.7.2
+    container_name: alt-meilisearch
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-super_secret_key}
+      MEILI_ENV: ${MEILI_ENV:-development}
+    ports:
+      - "${MEILISEARCH_PORT:-7700}:7700"
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - alt-network
+
+  # Object Storage
+  minio:
+    image: minio/minio:latest
+    container_name: alt-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/minio_data
+    command: server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - alt-network
+
+  # FastAPI Application
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile.fastapi
+    container_name: alt-fastapi
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-alt_db}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_AUTH_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_AUTH_PASSWORD:-password}
+      MEILISEARCH_URL: http://meilisearch:7700
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${FASTAPI_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+    networks:
+      - alt-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    container_name: alt-celery-worker
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-alt_db}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_AUTH_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_AUTH_PASSWORD:-password}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./app:/app/app
+    networks:
+      - alt-network
+    command: celery -A app.celery_app worker --loglevel=info
+
+  # Celery Beat (Scheduler)
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    container_name: alt-celery-beat
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-alt_db}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_AUTH_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_AUTH_PASSWORD:-password}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./app:/app/app
+    networks:
+      - alt-network
+    command: celery -A app.celery_app beat --loglevel=info
+
+  # Streamlit Application
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: alt-streamlit
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-alt_db}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_AUTH_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_AUTH_PASSWORD:-password}
+      MEILISEARCH_URL: http://meilisearch:7700
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    depends_on:
+      - postgres
+      - redis
+      - neo4j
+      - meilisearch
+      - minio
+      - fastapi
+    volumes:
+      - ./streamlit_app:/streamlit_app
+    networks:
+      - alt-network
+    command: streamlit run /streamlit_app/main.py --server.port=8501 --server.address=0.0.0.0
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  redis_data:
+  meilisearch_data:
+  minio_data:
+
+networks:
+  alt-network:
+    driver: bridge

@@ -8,6 +8,11 @@ pydantic-settings==2.1.0
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 neo4j==5.14.0
+alembic==1.12.1
+
+# Authentication & Security
+passlib[bcrypt]==1.7.4
+bcrypt==4.1.1
 
 # Celery & Task Queue
 celery==5.3.4

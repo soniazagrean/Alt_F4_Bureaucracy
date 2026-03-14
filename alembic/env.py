@@ -14,8 +14,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Setup the sqlalchemy url
-from app.db.database import DATABASE_URL
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+from app.config import settings
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
+# Import Base and models for autogenerate support
+from app.db.database import Base
+from app.models import *  # Import all models to register them
+target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
@@ -23,7 +28,7 @@ def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
-        target_metadata=None,
+        target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -35,7 +40,7 @@ def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
 
     configuration = config.get_section(config.config_ini_section)
-    configuration["sqlalchemy.url"] = DATABASE_URL
+    configuration["sqlalchemy.url"] = settings.DATABASE_URL
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
@@ -44,7 +49,7 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=None
+            connection=connection, target_metadata=target_metadata
         )
 
         with context.begin_transaction():

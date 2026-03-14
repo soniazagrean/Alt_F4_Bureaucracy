@@ -5,7 +5,7 @@ from app.db.database import init_db, engine
 from app.models import *  # Import all models to register them
 
 # Initialize database tables on startup
-init_db()
+# init_db()
 
 app = FastAPI(title="Alt_F4_Bureaucracy API", version="1.0.0")
 

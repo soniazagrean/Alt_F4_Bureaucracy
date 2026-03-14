@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     MINIO_PORT: int = 9000
     
     MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ACCESS_KEY: str = "minioadmin"
-    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_ACCESS_KEY: Optional[str] = None
+    MINIO_SECRET_KEY: Optional[str] = None
     
     MINIO_BUCKET_UPLOADS: str = "uploads"
     MINIO_BUCKET_PROCESSED: str = "processed"
@@ -59,5 +59,11 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def model_post_init(self, __context):
+        if self.MINIO_ACCESS_KEY is None:
+            self.MINIO_ACCESS_KEY = self.MINIO_ROOT_USER
+        if self.MINIO_SECRET_KEY is None:
+            self.MINIO_SECRET_KEY = self.MINIO_ROOT_PASSWORD
 
 settings = Settings()

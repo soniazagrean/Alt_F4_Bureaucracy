@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
-    MINIO_BUCKET_NAME: str = "documents"
+    MINIO_BUCKET_UPLOADS: str = "uploads"
+    MINIO_BUCKET_PROCESSED: str = "processed"
+    MINIO_BUCKET_QUARANTINE: str = "quarantine"
     MINIO_SECURE: bool = False
 
     # AI Services (Gemini)

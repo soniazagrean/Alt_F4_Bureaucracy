@@ -33,13 +33,27 @@ class Settings(BaseSettings):
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
 
     # Storage (MinIO)
+    MINIO_ROOT_USER: str = "minioadmin"
+    MINIO_ROOT_PASSWORD: str = "minioadmin"
+    MINIO_PORT: int = 9000
+    
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
+    
     MINIO_BUCKET_UPLOADS: str = "uploads"
     MINIO_BUCKET_PROCESSED: str = "processed"
     MINIO_BUCKET_QUARANTINE: str = "quarantine"
     MINIO_SECURE: bool = False
+
+    # Search Engine (Meilisearch)
+    MEILI_HOST: str = "localhost"
+    MEILISEARCH_PORT: int = 7700
+    MEILI_MASTER_KEY: str = "super_secret_key"
+    
+    @property
+    def MEILI_URL(self) -> str:
+        return f"http://{self.MEILI_HOST}:{self.MEILISEARCH_PORT}"
 
     # AI Services (Gemini)
     GEMINI_API_KEY: Optional[str] = None

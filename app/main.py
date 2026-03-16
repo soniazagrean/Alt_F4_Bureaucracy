@@ -59,3 +59,7 @@ async def db_status():
             "error": str(e)
         }, status_code=503)
 
+# Include invoice extraction routes
+from app.routes.invoices import router as invoices_router
+app.include_router(invoices_router)
+

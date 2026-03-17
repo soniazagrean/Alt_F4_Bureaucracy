@@ -252,7 +252,7 @@ async def main():
     print("\n⚠️  Make sure the FastAPI server is running:")
     print("   python -m uvicorn app.main:app --reload")
     
-    print("\n⚠️  Set your GEMINI_API_KEY in .env before running extractions")
+    print("\n⚠️  Set your OPENAI_API_KEY in .env before running extractions")
     
     # Test direct Pydantic validation (no API needed)
     await test_pydantic_validation()

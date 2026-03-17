@@ -11,7 +11,7 @@ if [ ! -f .env ]; then
     echo "⚠️  .env file not found. Creating template..."
     cat > .env.example << 'EOF'
 # Google Gemini API
-GEMINI_API_KEY=your_google_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
 
 # Database
 POSTGRES_USER=postgres
@@ -34,7 +34,7 @@ MEILI_HOST=localhost
 MEILI_MASTER_KEY=super_secret_key
 EOF
     echo "✅ Created .env.example"
-    echo "📝 Copy to .env and add your GEMINI_API_KEY"
+    echo "📝 Copy to .env and add your OPENAI_API_KEY"
 else
     echo "✅ .env file found"
 fi
@@ -47,7 +47,7 @@ echo ""
 echo "Step 1: Get Google Gemini API Key"
 echo "   - Go to https://ai.google.dev/"
 echo "   - Create API key"
-echo "   - Add to .env: GEMINI_API_KEY=your_key"
+echo "   - Add to .env: OPENAI_API_KEY=your_key"
 echo ""
 
 echo "Step 2: Install dependencies"

@@ -1,0 +1,375 @@
+"""Service for nomenclator archive classification using LLM prompt engineering."""
+import json
+import time
+import logging
+from typing import Optional, Dict, Any, Tuple
+from decimal import Decimal
+
+import httpx
+
+from app.config import settings
+from app.schemas_nomenclator import (
+    NomenclatorSuggestionRequest,
+    NomenclatorSuggestionResponse,
+    NomenclatorSuggestion,
+    ConfidentialityLevelEnum,
+    PastrareEnum
+)
+from pydantic import ValidationError
+
+logger = logging.getLogger(__name__)
+
+
+class NomenclatorSuggestionService:
+    """Service for suggesting archival nomenclature using LLM with Romanian standard context."""
+    
+    # Romanian standard nomenclator categories (I-VII) + common extensions
+    ROMANIAN_NOMENCLATOR_CONTEXT = """
+    ROMANIAN STANDARD NOMENCLATOR (I-VII Classification System)
+    ============================================================
+    
+    I. ADMINISTRATIVE AND ORGANIZATIONAL DOCUMENTS
+       I.1 - Company Structure and Governance
+       I.2 - Internal Regulations and Policies
+       I.3 - Meeting Minutes and Decisions
+       I.4 - Organizational Procedures
+    
+    II. FINANCIAL DOCUMENTS AND RECORDS
+        II.1 - Invoices and Billing Documents
+        II.2 - Financial Statements and Reports
+        II.3 - Tax Records and Declarations
+        II.4 - Bank Statements and Payments
+        II.5 - Accounting Records
+    
+    III. HUMAN RESOURCES AND EMPLOYMENT
+         III.1 - Employment Contracts
+         III.2 - Personnel Records
+         III.3 - Payroll and Compensation
+         III.4 - Training and Development
+         III.5 - Performance Reviews
+    
+    IV. LEGAL AND COMPLIANCE DOCUMENTS
+        IV.1 - Contracts and Agreements
+        IV.2 - Legal Correspondence
+        IV.3 - Compliance Reports
+        IV.4 - Regulatory Filings
+        IV.5 - Certificates and Licenses
+    
+    V. OPERATIONAL AND TECHNICAL DOCUMENTS
+       V.1 - Technical Specifications
+       V.2 - Project Documentation
+       V.3 - Maintenance Records
+       V.4 - Equipment Inventory
+       V.5 - Standard Operating Procedures
+    
+    VI. CORRESPONDENCE AND COMMUNICATIONS
+        VI.1 - Internal Correspondence
+        VI.2 - External Communications
+        VI.3 - Email Archives
+        VI.4 - Meeting Records
+        VI.5 - Notifications
+    
+    VII. ARCHIVE AND GENERAL DOCUMENTS
+         VII.1 - Reports and Studies
+         VII.2 - Historical Records
+         VII.3 - General Correspondence
+         VII.4 - Miscellaneous Documents
+    """
+    
+    PRESERVATION_GUIDE = """
+    PRESERVATION TERMS (Termen de Pastrare) Guidelines:
+    - 6_months: Temporary documents, drafts, working copies
+    - 1_year: Short-term operational documents
+    - 3_years: Regulatory compliance documents
+    - 5_years: Standard retention (default for most business documents)
+    - 7_years: Tax-related and financial records (Romanian tax law requirement)
+    - 10_years: Legal documents, contracts, HR records
+    - permanent: Strategic documents, policies, founding documents, legal records of significance
+    """
+    
+    CONFIDENTIALITY_GUIDE = """
+    CONFIDENTIALITY LEVELS:
+    - public: Documents that can be freely shared (annual reports, general policies)
+    - internal: For internal use only (internal memos, internal procedures)
+    - confidential: Sensitive business information (financial details, client lists)
+    - restricted: Highly sensitive (contracts with confidentiality clauses, proprietary information)
+    - top_secret: Government classified or extremely sensitive data
+    """
+    
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize the nomenclator suggestion service.
+        
+        Args:
+            api_key: OpenAI API key. If None, uses OPENAI_API_KEY from settings.
+        """
+        self.api_key = api_key or settings.OPENAI_API_KEY
+        if not self.api_key:
+            raise ValueError("OPENAI_API_KEY not configured in settings or provided as argument")
+        
+        self.base_url = "https://api.openai.com/v1/chat/completions"
+        self.model = "gpt-4"
+        self.timeout = 60.0
+    
+    def suggest_nomenclator(
+        self,
+        request: NomenclatorSuggestionRequest,
+        num_suggestions: int = 3
+    ) -> NomenclatorSuggestionResponse:
+        """
+        Suggest nomenclator classification for a document.
+        
+        Args:
+            request: NomenclatorSuggestionRequest with document metadata
+            num_suggestions: Number of suggestions to return (default 3)
+            
+        Returns:
+            NomenclatorSuggestionResponse with suggestions
+        """
+        start_time = time.time()
+        
+        try:
+            # Create prompt with hardcoded nomenclator context
+            prompt = self._create_suggestion_prompt(request, num_suggestions)
+            
+            # Call OpenAI API
+            response_text = self._call_openai_api(prompt)
+            
+            # Parse the response
+            suggestions, errors = self._parse_suggestions_response(response_text)
+            
+            processing_time = (time.time() - start_time) * 1000  # Convert to ms
+            
+            if not suggestions:
+                return NomenclatorSuggestionResponse(
+                    success=False,
+                    message="Failed to generate nomenclator suggestions",
+                    errors=errors or ["Unknown error during suggestion generation"],
+                    processing_time_ms=processing_time
+                )
+            
+            # Primary suggestion is the first one
+            primary = suggestions[0]
+            
+            return NomenclatorSuggestionResponse(
+                success=True,
+                message="Nomenclator suggestions generated successfully",
+                suggestions=suggestions,
+                primary_suggestion=primary,
+                confidence=primary.confidence,
+                processing_time_ms=processing_time
+            )
+            
+        except Exception as e:
+            logger.error(f"Error suggesting nomenclator: {str(e)}")
+            processing_time = (time.time() - start_time) * 1000
+            return NomenclatorSuggestionResponse(
+                success=False,
+                message=f"Error generating suggestions: {str(e)}",
+                errors=[str(e)],
+                processing_time_ms=processing_time
+            )
+    
+    def _create_suggestion_prompt(
+        self,
+        request: NomenclatorSuggestionRequest,
+        num_suggestions: int
+    ) -> str:
+        """
+        Create a comprehensive prompt for nomenclator suggestion.
+        
+        Args:
+            request: Document information for classification
+            num_suggestions: Number of suggestions to generate
+            
+        Returns:
+            Formatted prompt string
+        """
+        metadata_str = json.dumps(request.extracted_metadata, indent=2, default=str)
+        
+        prompt = f"""You are an expert archival specialist specializing in Romanian document classification and preservation.
+Your task is to suggest the most appropriate nomenclator classification for a document based on the Romanian standard nomenclator (I-VII system).
+
+{self.ROMANIAN_NOMENCLATOR_CONTEXT}
+
+{self.PRESERVATION_GUIDE}
+
+{self.CONFIDENTIALITY_GUIDE}
+
+DOCUMENT TO CLASSIFY:
+=====================
+Document Type: {request.document_type}
+Title: {request.title}
+Description: {request.description or "Not provided"}
+
+Extracted Metadata:
+{metadata_str}
+
+TASK:
+=====
+Based on the document information above, suggest {num_suggestions} nomenclator classifications.
+For each suggestion, determine:
+1. cod_nomenclator: The specific code from I-VII nomenclator (e.g., "II.1" for invoices)
+2. dosar_propus: A clear, descriptive name for the archive case/folder this would belong to
+3. termen_pastrare: How long to keep this document based on Romanian regulations and document type
+4. nivel_confidentialitate: The appropriate confidentiality level
+
+RESPONSE FORMAT:
+================
+Return a valid JSON response with this EXACT structure:
+{{
+    "suggestions": [
+        {{
+            "cod_nomenclator": "II.1",
+            "dosar_propus": "Financial Documents 2024",
+            "termen_pastrare": "7_years",
+            "nivel_confidentialitate": "confidential",
+            "confidence": 0.95,
+            "rationale": "This is an invoice (document_type=invoice) with financial metadata. Category II.1 covers invoices and billing documents. Romanian tax law requires 7 years retention for financial records. Confidentiality is set to confidential as it contains financial and supplier information."
+        }},
+        {{
+            "cod_nomenclator": "II.5",
+            "dosar_propus": "Accounting Records 2024",
+            "termen_pastrare": "7_years",
+            "nivel_confidentialitate": "internal",
+            "confidence": 0.75,
+            "rationale": "Alternative classification focusing on accounting aspect."
+        }},
+        {{
+            "cod_nomenclator": "I.2",
+            "dosar_propus": "Internal Procedures and Operations",
+            "termen_pastrare": "5_years",
+            "nivel_confidentialitate": "internal",
+            "confidence": 0.60,
+            "rationale": "Less likely but possible if document has procedure nature."
+        }}
+    ]
+}}
+
+CRITICAL REQUIREMENTS:
+======================
+1. Return ONLY valid JSON, no explanation text before or after
+2. cod_nomenclator must use I-VII Roman numeral format with decimal (e.g., "II.1", "V.3")
+3. termen_pastrare must be one of: 6_months, 1_year, 3_years, 5_years, 7_years, 10_years, permanent
+4. nivel_confidentialitate must be one of: public, internal, confidential, restricted, top_secret
+5. confidence must be a float between 0.0 and 1.0
+6. For Romanian documents, prefer 7_years for financial records (tax law requirement)
+7. All suggestions should be realistic and based on the provided document type and metadata"""
+        
+        return prompt
+    
+    def _call_openai_api(self, prompt: str) -> str:
+        """
+        Call the OpenAI API with the suggestion prompt.
+        
+        Args:
+            prompt: The prompt for nomenclator suggestion
+            
+        Returns:
+            Response text from the API
+        """
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.1,  # Low temperature for consistent, deterministic responses
+            "max_tokens": 2000
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(self.base_url, json=payload, headers=headers)
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                # Extract text from response
+                if "choices" in result and len(result["choices"]) > 0:
+                    message = result["choices"][0].get("message", {})
+                    content = message.get("content", "")
+                    if content:
+                        return content
+                
+                raise ValueError("Unexpected API response format")
+                
+        except httpx.HTTPError as e:
+            logger.error(f"OpenAI API error: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Error calling OpenAI API: {str(e)}")
+            raise
+    
+    def _parse_suggestions_response(
+        self,
+        response_text: str
+    ) -> Tuple[list[NomenclatorSuggestion], Optional[list[str]]]:
+        """
+        Parse and validate the LLM response into suggestions.
+        
+        Args:
+            response_text: The raw response from OpenAI API
+            
+        Returns:
+            Tuple of (list of NomenclatorSuggestion, list of errors or None)
+        """
+        try:
+            # Try to extract JSON from response
+            json_text = response_text.strip()
+            
+            # Remove markdown code blocks if present
+            if json_text.startswith("```json"):
+                json_text = json_text[7:]
+            if json_text.startswith("```"):
+                json_text = json_text[3:]
+            if json_text.endswith("```"):
+                json_text = json_text[:-3]
+            
+            json_text = json_text.strip()
+            
+            # Parse JSON
+            data = json.loads(json_text)
+            
+            suggestions_data = data.get("suggestions", [])
+            suggestions = []
+            errors = []
+            
+            for idx, suggestion_data in enumerate(suggestions_data):
+                try:
+                    # Map string values to enums
+                    if isinstance(suggestion_data.get("termen_pastrare"), str):
+                        suggestion_data["termen_pastrare"] = PastrareEnum(
+                            suggestion_data["termen_pastrare"]
+                        )
+                    
+                    if isinstance(suggestion_data.get("nivel_confidentialitate"), str):
+                        suggestion_data["nivel_confidentialitate"] = ConfidentialityLevelEnum(
+                            suggestion_data["nivel_confidentialitate"]
+                        )
+                    
+                    suggestion = NomenclatorSuggestion(**suggestion_data)
+                    suggestions.append(suggestion)
+                    
+                except (ValidationError, ValueError) as e:
+                    error_msg = f"Error parsing suggestion {idx + 1}: {str(e)}"
+                    logger.warning(error_msg)
+                    errors.append(error_msg)
+            
+            return suggestions, errors if errors else None
+            
+        except json.JSONDecodeError as e:
+            error_msg = f"Failed to parse JSON response: {str(e)}"
+            logger.error(error_msg)
+            return [], [error_msg]
+        except Exception as e:
+            error_msg = f"Error processing suggestions: {str(e)}"
+            logger.error(error_msg)
+            return [], [error_msg]

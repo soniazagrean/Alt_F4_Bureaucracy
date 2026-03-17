@@ -272,7 +272,7 @@ The extraction uses an optimized prompt that instructs Gemini to:
 The service requires a Gemini API key. Set it in `.env`:
 
 ```env
-GEMINI_API_KEY=your_google_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 ## Validation Rules

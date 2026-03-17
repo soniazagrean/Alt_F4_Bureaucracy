@@ -51,7 +51,7 @@ echo ""
 # Test 5: Extract from file (if provided)
 if [ -f "invoice.png" ]; then
     echo -e "${YELLOW}Test 5: Extract Invoice from File (invoice.png)${NC}"
-    echo "Note: Requires GEMINI_API_KEY to be set in .env"
+    echo "Note: Requires OPENAI_API_KEY to be set in .env"
     curl -s -X POST "$BASE_URL/api/v1/invoices/extract" \
       -F "file=@invoice.png" \
       -F "language=ro" \
@@ -73,7 +73,7 @@ echo ""
 INVOICE_FILES=$(ls invoice*.png 2>/dev/null | wc -l)
 if [ "$INVOICE_FILES" -gt 1 ]; then
     echo -e "${YELLOW}Test 7: Batch Extract Multiple Invoices${NC}"
-    echo "Note: Requires GEMINI_API_KEY to be set in .env"
+    echo "Note: Requires OPENAI_API_KEY to be set in .env"
     
     # Build form data with multiple files
     CURL_CMD="curl -s -X POST '$BASE_URL/api/v1/invoices/batch-extract' -F 'language=ro'"
@@ -108,22 +108,22 @@ echo "   - Use: python3 test_extended.py"
 echo ""
 echo "📄 Test 5: File Extraction"
 echo "   - Place an invoice image as 'invoice.png' to test"
-echo "   - Requires GEMINI_API_KEY in .env"
+echo "   - Requires OPENAI_API_KEY in .env"
 echo ""
 echo "🔗 Test 6: URL Extraction"
 echo "   - Replace image_url with actual invoice URL"
-echo "   - Requires GEMINI_API_KEY in .env"
+echo "   - Requires OPENAI_API_KEY in .env"
 echo ""
 echo "📚 Test 7: Batch Extraction"
 echo "   - Create multiple invoice files (invoice1.png, invoice2.png, etc.)"
-echo "   - Requires GEMINI_API_KEY in .env"
+echo "   - Requires OPENAI_API_KEY in .env"
 echo ""
 echo "========================================"
 echo "✅ Quick test suite completed"
 echo "========================================"
 echo ""
 echo "🚀 Next Steps:"
-echo "  1. Set GEMINI_API_KEY: export GEMINI_API_KEY='your-key'"
+echo "  1. Set OPENAI_API_KEY: export OPENAI_API_KEY='your-key'"
 echo "  2. For comprehensive tests: python3 test_extended.py"
 echo "  3. Place invoice images in current directory"
 echo ""

@@ -32,7 +32,7 @@ class Document(Base):
 
     # Document identification
     document_number = Column(String(255), unique=True, nullable=False, index=True)
-    document_type = Column(Enum(DocumentTypeEnum), nullable=False)
+    document_type = Column(Enum(DocumentTypeEnum, create_type=False), nullable=False)
     title = Column(String(511), nullable=False)
     description = Column(Text, nullable=True)
 
@@ -47,7 +47,7 @@ class Document(Base):
     page_count = Column(Integer, nullable=True)
 
     # Classification and processing
-    status = Column(Enum(DocumentStatusEnum), default=DocumentStatusEnum.UPLOADED, nullable=False, index=True)
+    status = Column(Enum(DocumentStatusEnum, create_type=False), default=DocumentStatusEnum.UPLOADED, nullable=False, index=True)
     fraud_score = Column(Float, default=0.0)  # 0-1 score for fraud detection
     confidence = Column(Float, nullable=True)  # 0-1 confidence in classification
 

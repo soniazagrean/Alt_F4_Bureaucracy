@@ -70,11 +70,11 @@ Tested 4 date formats:
 ### ⚠️ Test 6: Invoice File Extraction
 - **Status**: Skipped (no invoice.png in directory)
 - **Requirement**: Place invoice.png to test
-- **Note**: Requires GEMINI_API_KEY set in .env
+- **Note**: Requires OPENAI_API_KEY set in .env
 
 ### ⚠️ Test 7: URL Extraction  
 - **Status**: Example provided
-- **Requirement**: Valid invoice URL and GEMINI_API_KEY
+- **Requirement**: Valid invoice URL and OPENAI_API_KEY
 
 ### ⚠️ Test 8: Batch Extraction
 - **Status**: Skipped (requires multiple invoice files)
@@ -111,7 +111,7 @@ All validation tests passed:
 - Includes items array validation
 - Status: ✅ Working
 
-### Extraction Endpoints (Require GEMINI_API_KEY)
+### Extraction Endpoints (Require OPENAI_API_KEY)
 
 #### 3. POST /api/v1/invoices/extract
 - File upload
@@ -189,15 +189,15 @@ All validation tests passed:
 | Database | ✅ Connected | PostgreSQL |
 | Routes | ✅ Registered | All invoice routes active |
 | Validation | ✅ Active | Pydantic schemas enforced |
-| Extraction | ⏳ Ready | Awaiting GEMINI_API_KEY |
+| Extraction | ⏳ Ready | Awaiting OPENAI_API_KEY |
 
 ---
 
 ## Next Steps to Complete Testing
 
-1. **Set GEMINI_API_KEY**:
+1. **Set OPENAI_API_KEY**:
    ```bash
-   export GEMINI_API_KEY="your_api_key"
+   export OPENAI_API_KEY="your_api_key"
    ```
 
 2. **Add Test Images**:
@@ -246,7 +246,7 @@ The invoice extraction system is fully functional and ready for:
 - Prompt engineering validation
 - Pydantic schema enforcement
 
-Once GEMINI_API_KEY is configured and test invoice images are provided, the full extraction pipeline can be tested end-to-end.
+Once OPENAI_API_KEY is configured and test invoice images are provided, the full extraction pipeline can be tested end-to-end.
 
 ---
 

@@ -55,8 +55,8 @@ class Settings(BaseSettings):
     def MEILI_URL(self) -> str:
         return f"http://{self.MEILI_HOST}:{self.MEILISEARCH_PORT}"
 
-    # AI Services (Gemini)
-    GEMINI_API_KEY: Optional[str] = None
+    # AI Services (OpenAI)
+    OPENAI_API_KEY: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

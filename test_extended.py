@@ -232,7 +232,7 @@ def test_extraction_endpoint():
    }
 
 Requirements:
-- GEMINI_API_KEY environment variable must be set
+- OPENAI_API_KEY environment variable must be set
 - Image must be PNG or JPG (max 10MB)
 """)
 
@@ -262,7 +262,7 @@ def main():
 📚 Next Steps:
    1. Review the test results above
    2. Add your invoice images to test extraction
-   3. Set GEMINI_API_KEY environment variable
+   3. Set OPENAI_API_KEY environment variable
    4. Run ./test_api_quick.sh for quick API tests
    5. Read INVOICE_EXTRACTION.md for full documentation
     """)

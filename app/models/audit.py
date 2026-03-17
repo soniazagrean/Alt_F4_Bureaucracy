@@ -30,7 +30,7 @@ class AuditLog(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
     # Action
-    action = Column(Enum(AuditActionEnum), nullable=False, index=True)
+    action = Column(Enum(AuditActionEnum, create_type=False), nullable=False, index=True)
     resource_type = Column(String(100), nullable=False)  # e.g., "document", "dosar"
     resource_id = Column(Integer, nullable=False, index=True)
 

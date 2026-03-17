@@ -25,7 +25,7 @@ class FraudAlert(Base):
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
 
     # Alert details
-    anomaly_type = Column(Enum(AnomalyTypeEnum), nullable=False)
+    anomaly_type = Column(Enum(AnomalyTypeEnum, create_type=False), nullable=False)
     fraud_score = Column(Float, nullable=False)  # 0-1 confidence in fraud
     risk_level = Column(String(20), nullable=False)  # low, medium, high, critical
     description = Column(Text, nullable=False)

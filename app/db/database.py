@@ -27,4 +27,4 @@ def get_db():
 def init_db():
     """Initialize database - create all tables"""
     from app.models import user, document, audit  # Import models to register them with Base
-    Base.metadata.create_all(bind=engine)
+    # Base.metadata.create_all(bind=engine) # removed: Alembic manages schema

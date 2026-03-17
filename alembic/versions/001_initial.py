@@ -17,13 +17,31 @@ depends_on = None
 
 def upgrade() -> None:
     """Create initial database schema"""
-    # Create ENUM types
-    sa.Enum('ADMIN', 'ARCHIVIST', 'INSPECTOR', 'VIEWER', 'SYSTEM', name='roleenum').create(op.get_bind(), checkfirst=True)
-    sa.Enum('6_months', '1_year', '3_years', '5_years', '7_years', '10_years', 'permanent', name='pastrareEnum').create(op.get_bind(), checkfirst=True)
-    sa.Enum('uploaded', 'processing', 'classified', 'extracted', 'validated', 'archived', 'rejected', name='documentstatusenum').create(op.get_bind(), checkfirst=True)
-    sa.Enum('invoice', 'contract', 'report', 'correspondence', 'decision', 'protocol', 'other', name='documenttypeenum').create(op.get_bind(), checkfirst=True)
-    sa.Enum('create', 'read', 'update', 'delete', 'download', 'upload', 'classify', 'extract', 'archive', 'restore', 'login', 'logout', 'permission_change', name='auditactionenum').create(op.get_bind(), checkfirst=True)
-    sa.Enum('fraud', 'anomaly', name='anomalytypeenum').create(op.get_bind(), checkfirst=True)
+    # 1. Create ENUM types using safe SQL execution
+    # This block ensures types exist before we define columns.
+    conn = op.get_bind()
+    
+    enums = [
+        ("roleenum", "('ADMIN', 'ARCHIVIST', 'INSPECTOR', 'VIEWER', 'SYSTEM')"),
+        ("pastrareEnum", "('6_months', '1_year', '3_years', '5_years', '7_years', '10_years', 'permanent')"),
+        ("documentstatusenum", "('uploaded', 'processing', 'classified', 'extracted', 'validated', 'archived', 'rejected')"),
+        ("documenttypeenum", "('invoice', 'contract', 'report', 'correspondence', 'decision', 'protocol', 'other')"),
+        ("auditactionenum", "('create', 'read', 'update', 'delete', 'download', 'upload', 'classify', 'extract', 'archive', 'restore', 'login', 'logout', 'permission_change')"),
+        ("anomalytypeenum", "('fraud', 'anomaly')")
+    ]
+
+    for name, values in enums:
+        # Note the semicolon after NULL
+        conn.execute(sa.text(f"DO $$ BEGIN CREATE TYPE \"{name}\" AS ENUM {values}; EXCEPTION WHEN duplicate_object THEN NULL; END $$;"))
+
+    # 2. Define Enum objects for table columns
+    # We use postgresql.ENUM and explicitly set create_type=False
+    roleenum = postgresql.ENUM('ADMIN', 'ARCHIVIST', 'INSPECTOR', 'VIEWER', 'SYSTEM', name='roleenum', create_type=False)
+    pastrareenum = postgresql.ENUM('6_months', '1_year', '3_years', '5_years', '7_years', '10_years', 'permanent', name='pastrareEnum', create_type=False)
+    documentstatusenum = postgresql.ENUM('uploaded', 'processing', 'classified', 'extracted', 'validated', 'archived', 'rejected', name='documentstatusenum', create_type=False)
+    documenttypeenum = postgresql.ENUM('invoice', 'contract', 'report', 'correspondence', 'decision', 'protocol', 'other', name='documenttypeenum', create_type=False)
+    auditactionenum = postgresql.ENUM('create', 'read', 'update', 'delete', 'download', 'upload', 'classify', 'extract', 'archive', 'restore', 'login', 'logout', 'permission_change', name='auditactionenum', create_type=False)
+    anomalytypeenum = postgresql.ENUM('fraud', 'anomaly', name='anomalytypeenum', create_type=False)
 
     # users table
     op.create_table(
@@ -33,7 +51,7 @@ def upgrade() -> None:
         sa.Column('email', sa.String(255), nullable=False),
         sa.Column('full_name', sa.String(255), nullable=True),
         sa.Column('hashed_password', sa.String(255), nullable=False),
-        sa.Column('role', sa.Enum('ADMIN', 'ARCHIVIST', 'INSPECTOR', 'VIEWER', 'SYSTEM', name='roleenum'), nullable=False),
+        sa.Column('role', roleenum, nullable=False),
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.literal(True)),
         sa.Column('is_verified', sa.Boolean(), nullable=False, server_default=sa.literal(False)),
         sa.Column('created_at', sa.DateTime(), nullable=False),
@@ -54,7 +72,7 @@ def upgrade() -> None:
         sa.Column('name', sa.String(255), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column('parent_id', sa.Integer(), nullable=True),
-        sa.Column('default_termen_pastrare', sa.Enum('6_months', '1_year', '3_years', '5_years', '7_years', '10_years', 'permanent', name='pastrareEnum'), nullable=False),
+        sa.Column('default_termen_pastrare', pastrareenum, nullable=False),
         sa.Column('is_active', sa.Integer(), nullable=False, server_default='1'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
@@ -74,7 +92,7 @@ def upgrade() -> None:
         sa.Column('title', sa.String(511), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column('nomenclator_id', sa.Integer(), nullable=False),
-        sa.Column('termen_pastrare', sa.Enum('6_months', '1_year', '3_years', '5_years', '7_years', '10_years', 'permanent', name='pastrareEnum'), nullable=False),
+        sa.Column('termen_pastrare', pastrareenum, nullable=False),
         sa.Column('is_active', sa.Integer(), nullable=False, server_default='1'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
@@ -91,7 +109,7 @@ def upgrade() -> None:
         'documents',
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('document_number', sa.String(255), nullable=False),
-        sa.Column('document_type', sa.Enum('invoice', 'contract', 'report', 'correspondence', 'decision', 'protocol', 'other', name='documenttypeenum'), nullable=False),
+        sa.Column('document_type', documenttypeenum, nullable=False),
         sa.Column('title', sa.String(511), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column('amount', sa.Float(), nullable=True),
@@ -100,7 +118,7 @@ def upgrade() -> None:
         sa.Column('file_size', sa.Integer(), nullable=True),
         sa.Column('mime_type', sa.String(100), nullable=True),
         sa.Column('page_count', sa.Integer(), nullable=True),
-        sa.Column('status', sa.Enum('uploaded', 'processing', 'classified', 'extracted', 'validated', 'archived', 'rejected', name='documentstatusenum'), nullable=False),
+        sa.Column('status', documentstatusenum, nullable=False),
         sa.Column('fraud_score', sa.Float(), nullable=False, server_default='0.0'),
         sa.Column('confidence', sa.Float(), nullable=True),
         sa.Column('dosar_id', sa.Integer(), nullable=True),
@@ -157,7 +175,7 @@ def upgrade() -> None:
         'audit_logs',
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('user_id', sa.Integer(), nullable=False),
-        sa.Column('action', sa.Enum('create', 'read', 'update', 'delete', 'download', 'upload', 'classify', 'extract', 'archive', 'restore', 'login', 'logout', 'permission_change', name='auditactionenum'), nullable=False),
+        sa.Column('action', auditactionenum, nullable=False),
         sa.Column('resource_type', sa.String(100), nullable=False),
         sa.Column('resource_id', sa.Integer(), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
@@ -180,7 +198,7 @@ def upgrade() -> None:
         'fraud_alerts',
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('document_id', sa.Integer(), nullable=False),
-        sa.Column('anomaly_type', sa.Enum('fraud', 'anomaly', name='anomalytypeenum'), nullable=False),
+        sa.Column('anomaly_type', anomalytypeenum, nullable=False),
         sa.Column('severity', sa.String(50), nullable=False),
         sa.Column('score', sa.Float(), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
@@ -207,9 +225,10 @@ def downgrade() -> None:
     op.drop_table('nomenclator')
     op.drop_table('users')
 
-    sa.Enum('ADMIN', 'ARCHIVIST', 'INSPECTOR', 'VIEWER', 'SYSTEM', name='roleenum').drop(op.get_bind(), checkfirst=True)
-    sa.Enum('6_months', '1_year', '3_years', '5_years', '7_years', '10_years', 'permanent', name='pastrareEnum').drop(op.get_bind(), checkfirst=True)
-    sa.Enum('uploaded', 'processing', 'classified', 'extracted', 'validated', 'archived', 'rejected', name='documentstatusenum').drop(op.get_bind(), checkfirst=True)
-    sa.Enum('invoice', 'contract', 'report', 'correspondence', 'decision', 'protocol', 'other', name='documenttypeenum').drop(op.get_bind(), checkfirst=True)
-    sa.Enum('create', 'read', 'update', 'delete', 'download', 'upload', 'classify', 'extract', 'archive', 'restore', 'login', 'logout', 'permission_change', name='auditactionenum').drop(op.get_bind(), checkfirst=True)
-    sa.Enum('fraud', 'anomaly', name='anomalytypeenum').drop(op.get_bind(), checkfirst=True)
+    # Drop enums
+    op.execute("DROP TYPE IF EXISTS roleenum;")
+    op.execute("DROP TYPE IF EXISTS pastrareEnum;")
+    op.execute("DROP TYPE IF EXISTS documentstatusenum;")
+    op.execute("DROP TYPE IF EXISTS documenttypeenum;")
+    op.execute("DROP TYPE IF EXISTS auditactionenum;")
+    op.execute("DROP TYPE IF EXISTS anomalytypeenum;")

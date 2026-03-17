@@ -27,7 +27,7 @@ class Dosar(Base):
 
     # Classification
     nomenclator_id = Column(Integer, ForeignKey("nomenclator.id"), nullable=False)
-    termen_pastrare = Column(Enum(PastrareEnum), default=PastrareEnum.FIVE_YEARS, nullable=False)
+    termen_pastrare = Column(Enum(PastrareEnum, create_type=False), default=PastrareEnum.FIVE_YEARS, nullable=False)
 
     # Status and dates
     is_active = Column(Integer, default=1)  # 1 = active, 0 = archived

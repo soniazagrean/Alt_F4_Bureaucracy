@@ -22,17 +22,17 @@ class InvoiceExtractionService:
     
     def __init__(self, api_key: Optional[str] = None):
         """
-        Initialize the service with Gemini API key.
+        Initialize the service with OpenAI API key.
         
         Args:
-            api_key: Google Gemini API key. If None, uses GEMINI_API_KEY from settings.
+            api_key: OpenAI API key. If None, uses OPENAI_API_KEY from settings.
         """
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = api_key or settings.OPENAI_API_KEY
         if not self.api_key:
-            raise ValueError("GEMINI_API_KEY not configured in settings or provided as argument")
+            raise ValueError("OPENAI_API_KEY not configured in settings or provided as argument")
         
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-        self.model = "gemini-1.5-flash"
+        self.base_url = "https://api.openai.com/v1/chat/completions"
+        self.model = "gpt-4-vision"
     
     @staticmethod
     def _image_to_base64(image_path: str) -> str:
@@ -84,11 +84,11 @@ class InvoiceExtractionService:
             # Create the prompt
             prompt = self._create_extraction_prompt(language)
             
-            # Call Gemini API
-            response = self._call_gemini_api(image_base64, media_type, prompt)
+            # Call OpenAI API
+            response = self._call_openai_api(image_base64, media_type, prompt)
             
             # Parse the response
-            extracted_data, confidence = self._parse_gemini_response(response)
+            extracted_data, confidence = self._parse_openai_response(response)
             
             # Validate with Pydantic
             try:
@@ -171,9 +171,9 @@ Output ONLY the JSON object, no markdown, no explanations."""
         
         return prompt
     
-    def _call_gemini_api(self, image_base64: str, media_type: str, prompt: str) -> dict:
+    def _call_openai_api(self, image_base64: str, media_type: str, prompt: str) -> dict:
         """
-        Call Google Gemini API with vision capabilities.
+        Call OpenAI API with vision capabilities (GPT-4 Vision).
         
         Args:
             image_base64: Base64 encoded image
@@ -184,45 +184,37 @@ Output ONLY the JSON object, no markdown, no explanations."""
             API response as dictionary
         """
         headers = {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
         }
         
         payload = {
-            "contents": [
+            "model": self.model,
+            "messages": [
                 {
-                    "parts": [
+                    "role": "user",
+                    "content": [
                         {
+                            "type": "text",
                             "text": prompt
                         },
                         {
-                            "inline_data": {
-                                "mime_type": media_type,
-                                "data": image_base64
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{image_base64}"
                             }
                         }
                     ]
                 }
             ],
-            "generationConfig": {
-                "temperature": 0.1,  # Lower temperature for more consistent extraction
-                "maxOutputTokens": 2048,
-            },
-            "safetySettings": [
-                {
-                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    "threshold": "BLOCK_NONE"
-                },
-                {
-                    "category": "HARM_CATEGORY_HARASSMENT",
-                    "threshold": "BLOCK_NONE"
-                }
-            ]
+            "temperature": 0.1,
+            "max_tokens": 2048
         }
         
         try:
             with httpx.Client() as client:
                 response = client.post(
-                    f"{self.base_url}?key={self.api_key}",
+                    self.base_url,
                     json=payload,
                     headers=headers,
                     timeout=60.0
@@ -230,12 +222,12 @@ Output ONLY the JSON object, no markdown, no explanations."""
                 response.raise_for_status()
                 return response.json()
         except httpx.RequestError as e:
-            raise Exception(f"API request failed: {str(e)}")
+            raise Exception(f"OpenAI API request failed: {str(e)}")
     
     @staticmethod
-    def _parse_gemini_response(response: dict) -> Tuple[dict, float]:
+    def _parse_openai_response(response: dict) -> Tuple[dict, float]:
         """
-        Parse Gemini API response and extract JSON.
+        Parse OpenAI API response and extract JSON.
         
         Args:
             response: API response dictionary
@@ -244,15 +236,15 @@ Output ONLY the JSON object, no markdown, no explanations."""
             Tuple of (extracted JSON dict, confidence score)
         """
         try:
-            # Extract text from response
-            if "candidates" not in response or not response["candidates"]:
-                raise ValueError("No candidates in API response")
+            # Extract text from OpenAI response
+            if "choices" not in response or not response["choices"]:
+                raise ValueError("No choices in API response")
             
-            candidate = response["candidates"][0]
-            if "content" not in candidate or not candidate["content"]["parts"]:
-                raise ValueError("No content in candidate")
+            choice = response["choices"][0]
+            if "message" not in choice or "content" not in choice["message"]:
+                raise ValueError("No content in message")
             
-            text_content = candidate["content"]["parts"][0].get("text", "")
+            text_content = choice["message"]["content"]
             
             # Try to extract JSON from the response
             # Sometimes the API might wrap it in markdown code blocks
@@ -268,18 +260,15 @@ Output ONLY the JSON object, no markdown, no explanations."""
             # Parse JSON
             extracted_data = json.loads(text_content)
             
-            # Calculate confidence based on response metadata
-            confidence = 0.85  # Default confidence
-            if "safetyRatings" in candidate:
-                # Adjust confidence based on safety ratings
-                confidence = 0.9
+            # Calculate confidence (OpenAI doesn't provide explicit confidence, so use 0.9 as default)
+            confidence = 0.9
             
             return extracted_data, confidence
             
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse API response as JSON: {str(e)}")
         except Exception as e:
-            raise ValueError(f"Failed to parse Gemini response: {str(e)}")
+            raise ValueError(f"Failed to parse OpenAI response: {str(e)}")
     
     async def extract_invoice_async(
         self,

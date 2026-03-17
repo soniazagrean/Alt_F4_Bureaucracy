@@ -32,10 +32,11 @@ services:
     volumes:
       - neo4j_data:/var/lib/neo4j/data
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:7474"]
+      test: ["CMD", "neo4j", "status"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     networks:
       - alt-network
 
@@ -127,6 +128,8 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+
+      OPENAI_API_KEY: ${OPENAI_API_KEY}  
     ports:
       - "${FASTAPI_PORT:-8000}:8000"
     depends_on:

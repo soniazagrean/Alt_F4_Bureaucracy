@@ -63,3 +63,7 @@ async def db_status():
 from app.routes.invoices import router as invoices_router
 app.include_router(invoices_router)
 
+# Include nomenclator suggestion routes
+from app.routes.nomenclator import router as nomenclator_router
+app.include_router(nomenclator_router)
+

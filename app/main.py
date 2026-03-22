@@ -67,3 +67,14 @@ app.include_router(invoices_router)
 from app.routes.nomenclator import router as nomenclator_router
 app.include_router(nomenclator_router)
 
+# Include auth routes
+from app.routes.routes_auth import router as auth_router
+app.include_router(auth_router)
+
+# Include document routes
+from app.routes.routes_documents import router as documents_router
+app.include_router(documents_router)
+
+# Include archive routes
+from app.routes.routes_archive import router as archive_router
+app.include_router(archive_router)

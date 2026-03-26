@@ -6,6 +6,7 @@ from app.db.database import Base
 
 class DocumentStatusEnum(str, enum.Enum):
     """Document processing status"""
+    PENDING = "pending"
     UPLOADED = "uploaded"
     PROCESSING = "processing"
     CLASSIFIED = "classified"
@@ -45,9 +46,10 @@ class Document(Base):
     file_size = Column(Integer, nullable=True)  # in bytes
     mime_type = Column(String(100), nullable=True)
     page_count = Column(Integer, nullable=True)
+    file_hash = Column(String(64), unique=True, index=True, nullable=True) # Added for deduplication
 
     # Classification and processing
-    status = Column(Enum(DocumentStatusEnum, create_type=False), default=DocumentStatusEnum.UPLOADED, nullable=False, index=True)
+    status = Column(Enum(DocumentStatusEnum, create_type=False), default=DocumentStatusEnum.PENDING, nullable=False, index=True)
     fraud_score = Column(Float, default=0.0)  # 0-1 score for fraud detection
     confidence = Column(Float, nullable=True)  # 0-1 confidence in classification
 
@@ -69,6 +71,8 @@ class Document(Base):
     extracted_data = relationship("ExtractedData", back_populates="document", cascade="all, delete-orphan")
     pages = relationship("DocumentPage", back_populates="document", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="document")
+    
+    #
 
     def __repr__(self):
         return f"<Document(id={self.id}, number={self.document_number}, status={self.status})>"

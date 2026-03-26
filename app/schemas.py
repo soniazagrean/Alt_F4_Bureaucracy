@@ -41,6 +41,7 @@ class DocumentTypeEnum(str, Enum):
     OTHER = "other"
 
 class DocumentStatusEnum(str, Enum):
+    PENDING = "pending"
     UPLOADED = "uploaded"
     PROCESSING = "processing"
     CLASSIFIED = "classified"
@@ -69,6 +70,16 @@ class DocumentResponse(BaseModel):
     fraud_score: float
     created_at: datetime
     created_by_id: int
+
+    class Config:
+        from_attributes = True
+        
+class DocumentUploadResponse(BaseModel):
+    id: int
+    filename: str
+    status: str
+    message: str
+    is_duplicate: bool = False
 
     class Config:
         from_attributes = True

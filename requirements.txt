@@ -42,3 +42,6 @@ python-multipart==0.0.6
 
 # Development
 watchdog==3.0.0
+
+# Validation
+email-validator>=2.0.0

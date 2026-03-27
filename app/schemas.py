@@ -39,6 +39,11 @@ class DocumentTypeEnum(str, Enum):
     DECISION = "decision"
     PROTOCOL = "protocol"
     OTHER = "other"
+    
+    ADRESA         = "adresa"    # adresă oficială
+    CERERE         = "cerere"    # cerere / petiție
+    HCL            = "hcl"       # Hotărâre Consiliu Local
+    DEVIZ          = "deviz"     # deviz de lucrări
 
 class DocumentStatusEnum(str, Enum):
     PENDING = "pending"

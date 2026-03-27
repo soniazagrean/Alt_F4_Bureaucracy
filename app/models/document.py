@@ -24,6 +24,11 @@ class DocumentTypeEnum(str, enum.Enum):
     DECISION = "decision"
     PROTOCOL = "protocol"
     OTHER = "other"
+    
+    ADRESA         = "adresa"    # adresă oficială
+    CERERE         = "cerere"    # cerere / petiție
+    HCL            = "hcl"       # Hotărâre Consiliu Local
+    DEVIZ          = "deviz"     # deviz de lucrări
 
 class Document(Base):
     """Document model with metadata and processing status"""

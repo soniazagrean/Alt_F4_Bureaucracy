@@ -7,9 +7,12 @@ Run this to test the invoice extraction service.
 import asyncio
 import httpx
 import json
+import pytest
 from pathlib import Path
+from pydantic import ValidationError
+from app.schemas_invoice import InvoiceData
 
-
+@pytest.mark.asyncio
 async def test_extract_invoice_from_file():
     """Test extracting invoice data from a file."""
     print("\n=== Test 1: Extract Invoice from File ===")
@@ -58,6 +61,7 @@ async def test_extract_invoice_from_file():
         print(f"❌ Error: {str(e)}")
 
 
+@pytest.mark.asyncio
 async def test_validate_invoice_data():
     """Test invoice data validation."""
     print("\n=== Test 2: Validate Invoice Data ===")
@@ -117,6 +121,7 @@ async def test_validate_invoice_data():
         print(f"❌ Error: {str(e)}")
 
 
+@pytest.mark.asyncio
 async def test_extract_from_url():
     """Test extracting invoice data from a URL."""
     print("\n=== Test 3: Extract from URL ===")
@@ -145,6 +150,7 @@ async def test_extract_from_url():
     #     print(f"❌ Error: {str(e)}")
 
 
+@pytest.mark.asyncio
 async def test_batch_extract():
     """Test batch extraction of multiple invoices."""
     print("\n=== Test 4: Batch Extract Multiple Invoices ===")
@@ -188,6 +194,7 @@ async def test_batch_extract():
         print(f"❌ Error: {str(e)}")
 
 
+@pytest.mark.asyncio
 async def test_pydantic_validation():
     """Test Pydantic schema validation directly."""
     print("\n=== Test 5: Pydantic Schema Validation ===")
@@ -266,6 +273,52 @@ async def main():
     print("\n" + "=" * 60)
     print("Test suite completed")
     print("=" * 60)
+
+
+def test_llm_extraction_from_fixture():
+    """
+    Verify that LLM-extracted JSON from a fixture is complete 
+    and passes Pydantic validation. Resolves [NV-013].
+    """
+    # 1. Locate the fixture file
+    fixture_path = Path("tests/fixtures/invoice_sample.json")
+    
+    # Ensure the fixture exists before proceeding
+    if not fixture_path.exists():
+        pytest.skip(f"Fixture not found at {fixture_path}")
+    
+    # 2. Load raw data (simulating the LLM response)
+    with open(fixture_path, "r") as f:
+        extracted_json = json.load(f)
+    
+    # 3. Pydantic Validation (The core of ticket NV-013)
+    # This will raise a ValidationError if the JSON is incomplete or invalid
+    invoice = InvoiceData(**extracted_json)
+    
+    # 4. Safety assertions to confirm data integrity
+    assert invoice.nr_factura == "FAC-2024-001234"
+    assert invoice.total > 0
+    assert isinstance(invoice.items, list)
+    assert len(invoice.items) > 0
+    
+    print("✅ Extracted JSON is complete and valid according to Pydantic")
+
+def test_extraction_validation_error():
+    """
+    Ensure the system correctly rejects incomplete or malformed LLM data.
+    """
+    # Simulate an LLM response missing a required field (e.g., 'nr_factura')
+    incomplete_data = {
+        "data": "15.03.2024",
+        "furnizor": "SC EXAMPLE SRL",
+        "total": 100.0
+    }
+    
+    # Verify that Pydantic raises a ValidationError
+    with pytest.raises(ValidationError):
+        InvoiceData(**incomplete_data)
+    
+    print("✅ System correctly identified and rejected incomplete data")
 
 
 if __name__ == "__main__":

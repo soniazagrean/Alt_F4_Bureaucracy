@@ -147,6 +147,7 @@ services:
       - ./app:/app/app
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic/alembic.ini
+      - temp_data:/tmp
     networks:
       - alt-network
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -188,6 +189,7 @@ services:
       - postgres
     volumes:
       - ./app:/app/app
+      - temp_data:/tmp
     networks:
       - alt-network
     command: celery -A app.celery_app worker --loglevel=info
@@ -252,6 +254,7 @@ volumes:
   redis_data:
   meilisearch_data:
   minio_data:
+  temp_data:
 
 networks:
   alt-network:

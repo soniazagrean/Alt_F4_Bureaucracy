@@ -2,6 +2,7 @@ from celery import Celery
 from app.config import settings
 from app.services.pdf_utils import pdf_to_pages_safe
 from app.services.storage import storage
+from app.db.database import SessionLocal
 import logging
 import tempfile
 from pathlib import Path
@@ -229,3 +230,168 @@ def extract_invoice_from_pages_task(document_id: int, minio_paths: list):
             "document_id": document_id,
             "error": str(e)
         }
+
+
+@celery_app.task(bind=True, max_retries=3)
+def process_document_task(self, document_id: int):
+    """Orchestrates the full NV-014 pipeline for a single document."""
+    from app.models.document import Document, DocumentStatusEnum, DocumentPage, ExtractedData
+    from app.services.document_classification import DocumentClassificationService
+    from app.services.invoice_extraction import InvoiceExtractionService
+    from app.services.nomenclator_suggestion import NomenclatorSuggestionService
+    from app.schemas_nomenclator import NomenclatorSuggestionRequest
+    from datetime import datetime
+    import io
+    import os
+
+    db = SessionLocal()
+    doc = None
+    temp_files = []
+
+    try:
+        doc = db.query(Document).filter(Document.id == document_id).first()
+        if not doc:
+            raise ValueError(f"Document {document_id} not found")
+
+        doc.status = DocumentStatusEnum.PROCESSING
+        db.commit()
+
+        # Download PDF from MinIO
+        if not doc.file_path or "/" not in doc.file_path:
+            raise ValueError("Invalid document file_path in DB")
+
+        bucket_name, object_name = doc.file_path.split("/", 1)
+        pdf_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        pdf_tmp.close()
+        temp_files.append(pdf_tmp.name)
+        storage.client.fget_object(bucket_name, object_name, pdf_tmp.name)
+
+        # Convert PDF to page images
+        images, error = pdf_to_pages_safe(pdf_tmp.name, dpi=300)
+        if error or not images:
+            raise RuntimeError(f"PDF to image conversion failed: {error or 'no pages'}")
+
+        # Store page images and DB page records
+        minio_pages = []
+        for idx, img in enumerate(images):
+            out = io.BytesIO()
+            img.save(out, format="PNG")
+            out.seek(0)
+            page_object = f"documents/{document_id}/page_{idx:03d}.png"
+            page_minio_path = storage.upload_file(
+                file_data=out.getvalue(),
+                file_name=page_object,
+                bucket_key="processed",
+                content_type="image/png"
+            )
+
+            page_record = DocumentPage(
+                document_id=document_id,
+                page_number=idx,
+                image_path=page_minio_path,
+            )
+            db.add(page_record)
+            minio_pages.append(page_minio_path)
+
+        doc.page_count = len(minio_pages)
+        doc.status = DocumentStatusEnum.CLASSIFIED
+        db.commit()
+
+        # Classification (first page)
+        if minio_pages:
+            first_bucket, first_obj = minio_pages[0].split("/", 1)
+            first_local = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            first_local.close()
+            temp_files.append(first_local.name)
+            storage.client.fget_object(first_bucket, first_obj, first_local.name)
+
+            classifier = DocumentClassificationService()
+            classification, classification_errors = classifier.classify(first_local.name)
+            if classification:
+                doc.document_type = classification.tip_document.value
+                doc.confidence = classification.confidence
+                doc.status = DocumentStatusEnum.EXTRACTED
+                db.commit()
+
+        # Extract invoice data
+        extractor = InvoiceExtractionService()
+        extracted_metadata = {}
+
+        for minio_page in minio_pages:
+            bucket_name, object_name = minio_page.split("/", 1)
+            page_local = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            page_local.close()
+            temp_files.append(page_local.name)
+            storage.client.fget_object(bucket_name, object_name, page_local.name)
+
+            invoice_data, extract_errors, extract_confidence = extractor.extract_invoice_data(
+                page_local.name,
+                language="ro"
+            )
+
+            if invoice_data:
+                extracted_metadata = invoice_data.dict()
+                # map some fields back to Document
+                doc.amount = float(invoice_data.total)
+                if invoice_data.currency is None:
+                    doc.currency = "RON"
+                doc.document_number = invoice_data.nr_factura or doc.document_number
+
+                for key, value in extracted_metadata.items():
+                    db.add(ExtractedData(
+                        document_id=document_id,
+                        field_name=key,
+                        field_value=str(value),
+                        extraction_confidence=extract_confidence,
+                    ))
+
+                doc.status = DocumentStatusEnum.VALIDATED
+                db.commit()
+                break
+
+        # Nomenclator suggestion
+        nomenclator_service = NomenclatorSuggestionService()
+        request_body = NomenclatorSuggestionRequest(
+            document_type=(doc.document_type or "other"),
+            title=doc.title,
+            description=doc.description,
+            extracted_metadata=extracted_metadata,
+            language="ro"
+        )
+
+        suggestion_result = nomenclator_service.suggest_nomenclator(request_body, num_suggestions=3)
+        if suggestion_result.success and suggestion_result.primary_suggestion:
+            doc.status = DocumentStatusEnum.ARCHIVED
+            doc.archived_at = datetime.now()
+        else:
+            # still success but mark completed pipeline
+            doc.status = DocumentStatusEnum.ARCHIVED
+            doc.archived_at = datetime.now()
+
+        # Final commit
+        db.commit()
+
+        return {
+            "status": "done",
+            "document_id": document_id,
+            "pages_processed": len(minio_pages),
+            "extracted_metadata": extracted_metadata,
+            "nomenclator_suggestion": suggestion_result.dict() if suggestion_result else None
+        }
+
+    except Exception as exc:
+        logger.error(f"process_document_task({document_id}) failed: {exc}")
+        if doc:
+            doc.status = DocumentStatusEnum.REJECTED
+            db.commit()
+
+        raise self.retry(exc=exc, countdown=5 * (self.request.retries + 1))
+
+    finally:
+        # Cleanup local temp files
+        for f in temp_files:
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+            except Exception:
+                pass

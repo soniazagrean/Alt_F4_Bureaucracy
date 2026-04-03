@@ -13,8 +13,6 @@ from app.models.document import Document, DocumentStatusEnum, DocumentTypeEnum
 from app.services.storage import storage
 from app.schemas import DocumentUploadResponse
 
-from app.celery_app import convert_pdf_to_images_task
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -125,19 +123,17 @@ async def upload_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)
             tmp_path = tmp.name
         
         logger.info(f"Processing PDF upload: {file.filename} (doc_id={document_id})")
-        
-        conversion_task = convert_pdf_to_images_task.delay(
-            pdf_path=tmp_path,
-            document_id=document_id,
-            dpi=300
-        )
-        
+
+        from app.celery_app import process_document_task
+
+        process_task = process_document_task.delay(document_id)
+
         return JSONResponse({
             "status": "processing",
             "document_id": document_id,
             "filename": file.filename,
-            "conversion_task_id": conversion_task.id,
-            "message": "PDF conversion started. Check task status with the provided task_id"
+            "task_id": process_task.id,
+            "message": "Document processing started (NV-014 pipeline). Check task status with the provided task_id"
         })
         
     except HTTPException:
@@ -145,6 +141,23 @@ async def upload_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)
     except Exception as e:
         logger.error(f"Error uploading PDF: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+@router.post("/{document_id}/process")
+async def process_document(document_id: int, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    from app.celery_app import process_document_task
+
+    task = process_document_task.delay(document_id)
+    return JSONResponse({
+        "status": "processing",
+        "document_id": document_id,
+        "task_id": task.id,
+        "message": "Document processing task started"
+    })
+
 
 @router.get("/task-status/{task_id}")
 async def get_task_status(task_id: str):

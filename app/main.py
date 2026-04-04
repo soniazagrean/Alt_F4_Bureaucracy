@@ -67,6 +67,10 @@ app.include_router(invoices_router)
 from app.routes.nomenclator import router as nomenclator_router
 app.include_router(nomenclator_router)
 
+# Include auth routes
+from app.routes.routes_auth import router as auth_router
+app.include_router(auth_router)
+
 # Include document router suggestions
 from app.routes import documents
 app.include_router(documents.router, tags = ["Documents"])

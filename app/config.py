@@ -1,5 +1,6 @@
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 class Settings(BaseSettings):
     APP_NAME: str = "Alt_F4_Bureaucracy"
@@ -57,6 +58,12 @@ class Settings(BaseSettings):
 
     # AI Services (OpenAI)
     OPENAI_API_KEY: Optional[str] = None
+
+    # Auth (JWT)
+    JWT_SECRET_KEY: str = Field(default="change_me_in_production")
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

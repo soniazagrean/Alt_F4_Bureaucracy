@@ -8,8 +8,10 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
 from app.models.document import Document, DocumentStatusEnum, DocumentTypeEnum
+from app.models.user import User
 from app.services.storage import storage
 from app.schemas import DocumentUploadResponse
 
@@ -18,7 +20,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.post("/upload", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
     # 1. Read file content
     contents = await file.read()
     
@@ -59,7 +65,7 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
         mime_type=file.content_type,
         file_hash=file_hash,
         status=DocumentStatusEnum.PENDING,
-        created_by_id=1  # Placeholder: Assumes user ID 1 exists
+        created_by_id=current_user.id
     )
     
     db.add(new_doc)
@@ -75,7 +81,11 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
     )
 
 @router.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_pdf(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
     try:
         if file.content_type != "application/pdf" and not file.filename.endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF files are accepted")
@@ -110,7 +120,7 @@ async def upload_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)
             mime_type=file.content_type,
             file_hash=file_hash,
             status=DocumentStatusEnum.PENDING,
-            created_by_id=1  
+            created_by_id=current_user.id
         )
         db.add(new_doc)
         db.commit()
@@ -143,7 +153,11 @@ async def upload_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @router.post("/{document_id}/process")
-async def process_document(document_id: int, db: Session = Depends(get_db)):
+async def process_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -160,7 +174,10 @@ async def process_document(document_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/task-status/{task_id}")
-async def get_task_status(task_id: str):
+async def get_task_status(
+    task_id: str,
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+):
     from app.celery_app import celery_app
     
     try:

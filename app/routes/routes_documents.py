@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 import os
 import tempfile
 
+from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
 from app.models.document import Document, DocumentStatusEnum
 from app.schemas_classification import ClassificationResponse
@@ -15,23 +16,26 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
 @router.get("/")
-async def list_documents():
+async def list_documents(_=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR))):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
 
 @router.post("/")
-async def create_document():
+async def create_document(_=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR))):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
 
 @router.get("/{document_id}")
-async def get_document(document_id: int):
+async def get_document(
+    document_id: int,
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
 
 @router.put("/{document_id}")
-async def update_document(document_id: int):
+async def update_document(document_id: int, _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR))):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
 
 @router.delete("/{document_id}")
-async def delete_document(document_id: int):
+async def delete_document(document_id: int, _=Depends(require_roles(RBACRole.ADMIN))):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
 
 
@@ -45,6 +49,7 @@ async def delete_document(document_id: int):
 async def classify_document(
     document_id: int,
     db: Session = Depends(get_db),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
     """
     Descarcă prima pagină a documentului din MinIO, o trimite la

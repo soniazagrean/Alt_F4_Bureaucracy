@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from app.dependencies.security import RBACRole, require_roles
 from app.services.invoice_extraction import InvoiceExtractionService
 from app.schemas_invoice import InvoiceExtractionResponse, InvoiceData
 from app.db.database import get_db
@@ -19,6 +20,7 @@ router = APIRouter(prefix="/api/v1/invoices", tags=["invoices"])
 async def extract_invoice(
     file: UploadFile = File(..., description="Invoice image file (PNG, JPG)"),
     language: str = Query("en", description="Invoice language (en, ro, etc.)"),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
     """
     Extract invoice data from an image file.
@@ -86,7 +88,8 @@ async def extract_invoice(
 @router.post("/extract-url")
 async def extract_invoice_from_url(
     image_url: str = Query(..., description="URL of the invoice image"),
-    language: str = Query("en", description="Invoice language (en, ro, etc.")
+    language: str = Query("en", description="Invoice language (en, ro, etc."),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ) -> InvoiceExtractionResponse:
     """
     Extract invoice data from a URL.
@@ -141,6 +144,7 @@ async def validate_invoice_data(
     CUI: str = Query(...),
     total: float = Query(...),
     TVA: float = Query(...),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
 ):
     """
     Validate invoice data using Pydantic schemas (GET query parameters).
@@ -175,7 +179,8 @@ async def validate_invoice_data(
 
 @router.post("/validate-full")
 async def validate_invoice_full(
-    invoice_data: InvoiceData
+    invoice_data: InvoiceData,
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
     """
     Validate complete invoice data with items (POST with JSON body).
@@ -201,7 +206,8 @@ async def validate_invoice_full(
 @router.post("/batch-extract")
 async def batch_extract_invoices(
     files: list[UploadFile] = File(..., description="Multiple invoice image files"),
-    language: str = Query("en", description="Invoice language")
+    language: str = Query("en", description="Invoice language"),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
     """
     Extract data from multiple invoices in one request.

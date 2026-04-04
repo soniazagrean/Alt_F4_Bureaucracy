@@ -28,11 +28,13 @@ The system is built with the following components:
 ### Installation & Running
 
 1. **Clone or navigate to the project directory**:
+
    ```bash
    cd /path/to/Alt_F4_Bureaucracy
    ```
 
 2. **Create a `.env` file** (optional - uses defaults if not provided):
+
    ```bash
    # Database Configuration
    POSTGRES_USER=postgres
@@ -70,16 +72,19 @@ The system is built with the following components:
    ```
 
 3. **Start all services with Docker Compose**:
+
    ```bash
    docker-compose up -d
    ```
 
    For verbose output and debugging:
+
    ```bash
    docker-compose up
    ```
 
 4. **Wait for services to be ready** (health checks run automatically):
+
    ```bash
    docker-compose ps
    ```
@@ -150,6 +155,7 @@ Alt_F4_Bureaucracy/
 ## Common Commands
 
 ### Start Services
+
 ```bash
 # Start all services in background
 docker-compose up -d
@@ -160,6 +166,7 @@ docker-compose up -d streamlit
 ```
 
 ### View Logs
+
 ```bash
 # View all service logs
 docker-compose logs -f
@@ -171,6 +178,7 @@ docker-compose logs -f streamlit
 ```
 
 ### Stop Services
+
 ```bash
 # Stop all services
 docker-compose down
@@ -180,6 +188,7 @@ docker-compose down -v
 ```
 
 ### Rebuild Services
+
 ```bash
 # Rebuild all services
 docker-compose up -d --build
@@ -189,6 +198,7 @@ docker-compose up -d --build fastapi
 ```
 
 ### Access Service Shells
+
 ```bash
 # FastAPI container
 docker exec -it alt-fastapi bash
@@ -202,25 +212,26 @@ docker exec -it alt-postgres psql -U postgres -d alt_db
 
 ## Services Overview
 
-| Service | Port | Purpose | Healthcheck |
-|---------|------|---------|-------------|
-| PostgreSQL | 5432 | Primary relational database | `pg_isready` |
-| Neo4j | 7687 / 7474 | Graph database & browser UI | HTTP GET |
-| Redis | 6379 | Cache & message broker | Redis PING |
-| Meilisearch | 7700 | Full-text search engine | HTTP GET /health |
-| MinIO | 9000 / 9001 | Object storage & console | HTTP GET /health |
-| FastAPI | 8000 | REST API backend | Implicit |
-| Celery Worker | - | Async task processing | - |
-| Celery Beat | - | Task scheduling | - |
-| Streamlit | 8501 | Web dashboard | - |
+| Service       | Port        | Purpose                     | Healthcheck      |
+| ------------- | ----------- | --------------------------- | ---------------- |
+| PostgreSQL    | 5432        | Primary relational database | `pg_isready`     |
+| Neo4j         | 7687 / 7474 | Graph database & browser UI | HTTP GET         |
+| Redis         | 6379        | Cache & message broker      | Redis PING       |
+| Meilisearch   | 7700        | Full-text search engine     | HTTP GET /health |
+| MinIO         | 9000 / 9001 | Object storage & console    | HTTP GET /health |
+| FastAPI       | 8000        | REST API backend            | Implicit         |
+| Celery Worker | -           | Async task processing       | -                |
+| Celery Beat   | -           | Task scheduling             | -                |
+| Streamlit     | 8501        | Web dashboard               | -                |
 
 ## Development Notes
 
 - **Database Migrations**: Use Alembic for schema changes
+
   ```bash
   # Create a new migration
   docker-compose exec fastapi alembic revision --autogenerate -m "message"
-  
+
   # Apply migrations
   docker-compose exec fastapi alembic upgrade head
   ```
@@ -234,18 +245,81 @@ docker exec -it alt-postgres psql -U postgres -d alt_db
 ## Troubleshooting
 
 ### Services fail to start
+
 - Check Docker is running: `docker ps`
 - Review logs: `docker-compose logs`
 - Ensure ports are not already in use: `netstat -an | grep LISTEN`
 
 ### Database connection errors
+
 - Verify PostgreSQL is healthy: `docker-compose ps postgres`
 - Check connection string in environment variables
 - Reset database: `docker-compose down -v && docker-compose up -d`
 
 ### Memory issues with Neo4j
+
 - Edit `docker-compose.yml` Neo4j section to adjust heap sizes
 - Default is 512MB initial, 1024MB max
+
+## Auth and RBAC Manual Test Cases
+
+Use this section as a checklist for manual testing in Swagger (`/docs`) or with `curl`.
+
+### Role Mapping (current implementation)
+
+- `admin`, `system` -> `ADMIN`
+- `archivist`, `inspector`, `operator` -> `OPERATOR`
+- `viewer`, `auditor` -> `AUDITOR`
+
+### Authentication Endpoints
+
+| Endpoint                                                    | Expected Response                        |
+| ----------------------------------------------------------- | ---------------------------------------- |
+| `POST /auth/register` with new username/email               | `200` + created user info                |
+| `POST /auth/register` with duplicate username/email         | `409`                                    |
+| `POST /auth/login` with valid credentials                   | `200` + `access_token` + `refresh_token` |
+| `POST /auth/login` with invalid credentials                 | `401`                                    |
+| `GET /auth/me` with valid access token                      | `200` + current user profile             |
+| `GET /auth/me` without token                                | `403` with `Not authenticated`           |
+| `POST /auth/refresh` with valid refresh token               | `200` + new token pair                   |
+| `POST /auth/refresh` with revoked/expired/old refresh token | `401`                                    |
+| `POST /auth/logout` with valid refresh token                | `200` + `Refresh token revoked`          |
+
+### RBAC Authorization Matrix
+
+#### Document endpoints
+
+| Endpoint                      | ADMIN                          | OPERATOR                       | AUDITOR                          |
+| ----------------------------- | ------------------------------ | ------------------------------ | -------------------------------- |
+| `POST /upload`                | `200` or `409` duplicate       | `200` or `409` duplicate       | `403` `Insufficient permissions` |
+| `POST /upload-pdf`            | `200` (or processing response) | `200` (or processing response) | `403` `Insufficient permissions` |
+| `POST /{document_id}/process` | `200`                          | `200`                          | `403` `Insufficient permissions` |
+| `GET /task-status/{task_id}`  | `200`                          | `200`                          | `200`                            |
+
+#### Invoice endpoints
+
+| Endpoint                              | ADMIN   | OPERATOR | AUDITOR |
+| ------------------------------------- | ------- | -------- | ------- |
+| `POST /api/v1/invoices/extract`       | allowed | allowed  | `403`   |
+| `POST /api/v1/invoices/extract-url`   | allowed | allowed  | `403`   |
+| `POST /api/v1/invoices/validate-full` | allowed | allowed  | `403`   |
+| `POST /api/v1/invoices/batch-extract` | allowed | allowed  | `403`   |
+| `GET /api/v1/invoices/validate`       | allowed | allowed  | allowed |
+
+#### Nomenclator endpoints
+
+| Endpoint                                 | ADMIN   | OPERATOR | AUDITOR |
+| ---------------------------------------- | ------- | -------- | ------- |
+| `POST /api/v1/nomenclator/suggest`       | allowed | allowed  | `403`   |
+| `POST /api/v1/nomenclator/suggest-batch` | allowed | allowed  | `403`   |
+| `GET /api/v1/nomenclator/standards`      | allowed | allowed  | allowed |
+
+### Notes for Swagger (`/docs`)
+
+- Endpoints are visible to all users in Swagger; authorization is enforced only on `Execute`.
+- If response is `403` with `Not authenticated`, token header was not sent.
+- If response is `403` with `Insufficient permissions`, token is valid but role is not allowed.
+- In Swagger generated `curl`, confirm the `Authorization: Bearer ...` header exists before executing.
 
 ## Team Collaboration
 

@@ -1,8 +1,9 @@
 """API routes for nomenclator archive classification and suggestion."""
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, Dict, Any
 import logging
 
+from app.dependencies.security import RBACRole, require_roles
 from app.schemas_nomenclator import (
     NomenclatorSuggestionRequest,
     NomenclatorSuggestionResponse
@@ -42,7 +43,8 @@ async def suggest_nomenclator(
         ge=1,
         le=5,
         description="Number of suggestions to return (1-5, default 3)"
-    )
+    ),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ) -> NomenclatorSuggestionResponse:
     """
     Suggest nomenclator classifications for a document.
@@ -113,7 +115,8 @@ async def suggest_nomenclator_batch(
         ge=1,
         le=5,
         description="Number of suggestions per document"
-    )
+    ),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ) -> list[NomenclatorSuggestionResponse]:
     """
     Suggest nomenclator classifications for multiple documents in batch.
@@ -153,7 +156,9 @@ async def suggest_nomenclator_batch(
     summary="Get Romanian nomenclator standards reference",
     description="Return the hardcoded Romanian standard nomenclator (I-VII) context used for classification."
 )
-async def get_nomenclator_standards() -> Dict[str, Any]:
+async def get_nomenclator_standards(
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+) -> Dict[str, Any]:
     """
     Get the Romanian nomenclator standards reference used in suggestions.
     

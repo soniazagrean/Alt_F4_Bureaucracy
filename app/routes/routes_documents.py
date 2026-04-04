@@ -1,4 +1,7 @@
 # app/routes/routes_documents.py
+from datetime import timedelta
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -10,7 +13,7 @@ from app.db.database import get_db
 from app.models.document import Document, DocumentStatusEnum
 from app.schemas_classification import ClassificationResponse
 from app.services.document_classification import DocumentClassificationService
-from app.services.storage import StorageService   # existing MinIO helper
+from app.services.storage import StorageService, storage   # existing MinIO helper
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -26,9 +29,94 @@ async def create_document(_=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERA
 @router.get("/{document_id}")
 async def get_document(
     document_id: int,
+    db: Session = Depends(get_db),
     _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
 ):
-    return JSONResponse({"detail": "not implemented"}, status_code=501)
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    storage_service = storage
+    preview_url = None
+    try:
+        bucket_name, object_name = doc.file_path.split("/", 1)
+        preview_url = storage_service.client.presigned_get_object(
+            bucket_name,
+            object_name,
+            expires=timedelta(minutes=15),
+        )
+    except Exception:
+        preview_url = None
+
+    extracted_data = [
+        {
+            "id": item.id,
+            "field_name": item.field_name,
+            "field_value": item.field_value,
+            "extraction_confidence": item.extraction_confidence,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+            "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+        }
+        for item in doc.extracted_data
+    ]
+
+    pages = [
+        {
+            "id": page.id,
+            "page_number": page.page_number,
+            "image_path": page.image_path,
+            "text_content": page.text_content,
+            "created_at": page.created_at.isoformat() if page.created_at else None,
+        }
+        for page in sorted(doc.pages, key=lambda item: item.page_number)
+    ]
+
+    payload: dict[str, Any] = {
+        "id": doc.id,
+        "document_number": doc.document_number,
+        "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),
+        "title": doc.title,
+        "description": doc.description,
+        "amount": doc.amount,
+        "currency": doc.currency,
+        "status": doc.status.value if hasattr(doc.status, "value") else str(doc.status),
+        "fraud_score": doc.fraud_score,
+        "confidence": doc.confidence,
+        "file_path": doc.file_path,
+        "file_size": doc.file_size,
+        "mime_type": doc.mime_type,
+        "page_count": doc.page_count,
+        "file_hash": doc.file_hash,
+        "document_date": doc.document_date.isoformat() if doc.document_date else None,
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+        "archived_at": doc.archived_at.isoformat() if doc.archived_at else None,
+        "created_by_id": doc.created_by_id,
+        "dosar_id": doc.dosar_id,
+        "nomenclator_id": doc.nomenclator_id,
+        "preview_url": preview_url,
+        "preview_url_expires_in_minutes": 15,
+        "pages": pages,
+        "extracted_data": extracted_data,
+        "classification": {
+            "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),
+            "confidence": doc.confidence,
+        },
+        "nomenclator": None,
+    }
+
+    if doc.nomenclator:
+        payload["nomenclator"] = {
+            "id": doc.nomenclator.id,
+            "code": doc.nomenclator.code,
+            "name": doc.nomenclator.name,
+            "description": doc.nomenclator.description,
+        }
+
+    if doc.status in {DocumentStatusEnum.PENDING, DocumentStatusEnum.UPLOADED, DocumentStatusEnum.PROCESSING}:
+        return JSONResponse(payload, status_code=202)
+
+    return JSONResponse(payload)
 
 @router.put("/{document_id}")
 async def update_document(document_id: int, _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR))):

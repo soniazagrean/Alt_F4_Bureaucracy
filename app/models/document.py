@@ -14,6 +14,7 @@ class DocumentStatusEnum(str, enum.Enum):
     VALIDATED = "validated"
     ARCHIVED = "archived"
     REJECTED = "rejected"
+    ERROR = "error"
 
 class DocumentTypeEnum(str, enum.Enum):
     """Document types according to nomenclator"""
@@ -55,6 +56,9 @@ class Document(Base):
 
     # Classification and processing
     status = Column(Enum(DocumentStatusEnum, create_type=False), default=DocumentStatusEnum.PENDING, nullable=False, index=True)
+    retry_count = Column(Integer, default=0, nullable=False)
+    error_message = Column(Text, nullable=True)
+    error_timestamp = Column(DateTime, nullable=True)
     fraud_score = Column(Float, default=0.0)  # 0-1 score for fraud detection
     confidence = Column(Float, nullable=True)  # 0-1 confidence in classification
 

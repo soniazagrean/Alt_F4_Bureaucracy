@@ -3,6 +3,7 @@ from app.config import settings
 from app.services.pdf_utils import pdf_to_pages_safe
 from app.services.storage import storage
 from app.db.database import SessionLocal
+from datetime import datetime, timezone, timedelta
 import logging
 import tempfile
 from pathlib import Path
@@ -23,9 +24,114 @@ celery_app.conf.update(
     result_serializer='json',
     timezone='UTC',
     enable_utc=True,
+    beat_schedule={
+        'recover-stuck-documents': {
+            'task': 'app.celery_app.recover_stuck_documents',
+            'schedule': 300.0,
+            'args': (),
+        },
+    },
 )
 
+
+def _get_document(db, document_id: int):
+    from app.models.document import Document
+
+    return db.query(Document).filter(Document.id == document_id).first()
+
+
+def _mark_document_retry(document_id: int, error_text: str):
+    from app.models.document import DocumentStatusEnum
+
+    db = SessionLocal()
+    try:
+        doc = _get_document(db, document_id)
+        if not doc:
+            return
+
+        doc.retry_count = (doc.retry_count or 0) + 1
+        doc.error_message = error_text
+        doc.error_timestamp = datetime.now(timezone.utc)
+        doc.status = DocumentStatusEnum.PROCESSING
+        db.commit()
+        logger.warning(
+            f"Document {document_id} retry {doc.retry_count} scheduled after failure: {error_text}"
+        )
+    except Exception as exc:
+        logger.error(f"Failed to update retry state for document {document_id}: {exc}")
+    finally:
+        db.close()
+
+
+def _mark_document_dead_letter(document_id: int, error_text: str, attempt_count: int):
+    from app.models.document import DocumentStatusEnum
+
+    db = SessionLocal()
+    try:
+        doc = _get_document(db, document_id)
+        if not doc:
+            return
+
+        doc.error_message = error_text
+        doc.error_timestamp = datetime.now(timezone.utc)
+        doc.status = DocumentStatusEnum.ERROR
+        db.commit()
+        logger.error(
+            f"Document {document_id} permanently failed after {attempt_count} attempts: {error_text}"
+        )
+    except Exception as exc:
+        logger.error(f"Failed to mark document {document_id} as dead-letter: {exc}")
+    finally:
+        db.close()
+
+
 @celery_app.task
+def recover_stuck_documents():
+    from app.models.document import Document, DocumentStatusEnum
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+        stuck_documents = db.query(Document).filter(
+            Document.status == DocumentStatusEnum.PROCESSING,
+            Document.updated_at < cutoff,
+        ).all()
+
+        reset_count = 0
+        dead_letter_count = 0
+
+        for doc in stuck_documents:
+            if (doc.retry_count or 0) >= 3:
+                doc.status = DocumentStatusEnum.ERROR
+                doc.error_message = "Document stuck in PROCESSING after max retries"
+                doc.error_timestamp = datetime.now(timezone.utc)
+                dead_letter_count += 1
+                logger.error(
+                    f"Dead-lettering stuck document {doc.id}: exceeded retry limit"
+                )
+            else:
+                doc.status = DocumentStatusEnum.PENDING
+                reset_count += 1
+                logger.warning(
+                    f"Reset stuck document {doc.id} to PENDING (retry_count={doc.retry_count or 0})"
+                )
+
+        if reset_count or dead_letter_count:
+            db.commit()
+
+        return {
+            'reset_documents': reset_count,
+            'dead_letter_documents': dead_letter_count,
+            'checked_at': datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        logger.error(f"recover_stuck_documents failed: {exc}")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=3)
 def example_task(x):
     """Example Celery task"""
     return x * 2
@@ -380,12 +486,21 @@ def process_document_task(self, document_id: int):
         }
 
     except Exception as exc:
-        logger.error(f"process_document_task({document_id}) failed: {exc}")
-        if doc:
-            doc.status = DocumentStatusEnum.REJECTED
-            db.commit()
+        error_text = str(exc)
+        logger.error(f"process_document_task({document_id}) failed: {error_text}")
 
-        raise self.retry(exc=exc, countdown=5 * (self.request.retries + 1))
+        if doc:
+            _mark_document_retry(document_id, error_text)
+
+        if self.request.retries < self.max_retries:
+            backoff_schedule = [60, 300, 900]
+            countdown = backoff_schedule[self.request.retries] if self.request.retries < len(backoff_schedule) else backoff_schedule[-1]
+            raise self.retry(exc=exc, countdown=countdown)
+
+        # Final failure after max retries
+        if doc:
+            _mark_document_dead_letter(document_id, error_text, self.request.retries + 1)
+        raise
 
     finally:
         # Cleanup local temp files

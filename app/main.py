@@ -23,8 +23,25 @@ async def lifespan(app: FastAPI):
         print("Search index initialized.")
     except Exception as e:
         print(f"Warning: Could not initialize search index: {e}")
+
+    try:
+        from app.db.neo4j import init_driver, init_constraints
+
+        init_driver()
+        init_constraints()
+        print("Neo4j driver initialized and constraints ensured.")
+    except Exception as e:
+        print(f"Warning: Could not initialize Neo4j: {e}")
     
     yield
+
+    try:
+        from app.db.neo4j import close_driver
+
+        close_driver()
+        print("Neo4j driver closed.")
+    except Exception as e:
+        print(f"Warning: Could not close Neo4j driver: {e}")
 
 app = FastAPI(title="Alt_F4_Bureaucracy API", version="1.0.0", lifespan=lifespan)
 

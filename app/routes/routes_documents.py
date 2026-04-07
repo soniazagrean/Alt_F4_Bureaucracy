@@ -1,8 +1,9 @@
 # app/routes/routes_documents.py
 from datetime import timedelta
-from typing import Any
+from typing import Any, Optional
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 import os
@@ -12,10 +13,14 @@ from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
 from app.models.document import Document, DocumentStatusEnum
 from app.schemas_classification import ClassificationResponse
+from app.schemas_related import RelatedDocumentsResponse, RelationType
 from app.services.document_classification import DocumentClassificationService
+from app.services import graph_service
 from app.services.storage import StorageService, storage   # existing MinIO helper
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.get("/")
@@ -117,6 +122,74 @@ async def get_document(
         return JSONResponse(payload, status_code=202)
 
     return JSONResponse(payload)
+
+
+@router.get("/{document_id}/related", response_model=RelatedDocumentsResponse)
+async def get_related_documents(
+    document_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=20),
+    relation_type: Optional[RelationType] = Query(None),
+    db: Session = Depends(get_db),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        if graph_service.get_document_node(str(document_id)) is None:
+            return RelatedDocumentsResponse(
+                document_id=str(document_id),
+                related=[],
+                page=page,
+                page_size=page_size,
+                total_count=0,
+                total_pages=0,
+            )
+
+        skip = (page - 1) * page_size
+        if relation_type == RelationType.SAME_DOSAR:
+            related, total_count = graph_service.get_related_by_dosar(
+                str(document_id),
+                skip,
+                page_size,
+            )
+        elif relation_type == RelationType.SAME_FURNIZOR:
+            related, total_count = graph_service.get_related_by_furnizor(
+                str(document_id),
+                skip,
+                page_size,
+            )
+        else:
+            related, total_count = graph_service.get_all_related(
+                str(document_id),
+                skip,
+                page_size,
+            )
+    except Exception as exc:
+        try:
+            from neo4j.exceptions import ServiceUnavailable, Neo4jError
+        except ImportError:
+            ServiceUnavailable = Neo4jError = Exception
+
+        if isinstance(exc, (ServiceUnavailable, Neo4jError)):
+            logger.error("Neo4j unavailable while fetching related documents: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="Neo4j service unavailable",
+            )
+        raise
+
+    total_pages = (total_count + page_size - 1) // page_size if total_count else 0
+    return RelatedDocumentsResponse(
+        document_id=str(document_id),
+        related=related,
+        page=page,
+        page_size=page_size,
+        total_count=total_count,
+        total_pages=total_pages,
+    )
 
 @router.put("/{document_id}")
 async def update_document(document_id: int, _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR))):

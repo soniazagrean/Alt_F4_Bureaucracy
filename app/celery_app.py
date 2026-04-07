@@ -477,6 +477,17 @@ def process_document_task(self, document_id: int):
         # Final commit
         db.commit()
 
+        try:
+            from app.services.graph_service import populate_graph_for_document
+
+            populate_graph_for_document(document_id)
+        except Exception as exc:
+            logger.error(
+                "Graph population failed for document %s: %s",
+                document_id,
+                exc,
+            )
+
         return {
             "status": "done",
             "document_id": document_id,

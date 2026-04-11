@@ -1,22 +1,25 @@
 # app/routes/routes_documents.py
-from datetime import timedelta
-from typing import Any, Optional
+from datetime import timedelta, datetime
+from typing import Any, Optional, List
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
 import os
 import tempfile
 
 from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
-from app.models.document import Document, DocumentStatusEnum
+from app.models.document import Document, DocumentStatusEnum, ExtractedData
 from app.schemas_classification import ClassificationResponse
 from app.schemas_related import RelatedDocumentsResponse, RelationType
 from app.services.document_classification import DocumentClassificationService
 from app.services import graph_service
 from app.services.storage import StorageService, storage   # existing MinIO helper
+from app.services.search import SearchService
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -30,6 +33,193 @@ async def list_documents(_=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERAT
 @router.post("/")
 async def create_document(_=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR))):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
+
+@router.get("/search")
+async def search_documents(
+    q: str = Query("", min_length=0, description="Full-text search query"),
+    tip_document: Optional[str] = Query(None, description="Filter by document type (invoice, contract, report, etc.)"),
+    data_start: Optional[str] = Query(None, description="Filter documents from date (ISO format: YYYY-MM-DD)"),
+    data_end: Optional[str] = Query(None, description="Filter documents until date (ISO format: YYYY-MM-DD)"),
+    status: Optional[str] = Query(None, description="Filter by status (pending, archived, error, etc.)"),
+    limit: int = Query(20, ge=1, le=100, description="Number of results to return"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+    db: Session = Depends(get_db),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+):
+    """
+    NV-021: Full-text search endpoint for indexed documents.
+    
+    Queries MeiliSearch with fallback to PostgreSQL if MeiliSearch is unavailable.
+    
+    Query Parameters:
+    - q: Full-text search query
+    - tip_document: Filter by document type
+    - data_start / data_end: Date range filtering
+    - status: Filter by processing status
+    - limit: Results per page (max 100)
+    - offset: Pagination offset
+    
+    Returns:
+    - List of matching documents with relevance scores
+    - Total hit count
+    - MeiliSearch processing time
+    """
+    try:
+        search_service = SearchService()
+        
+        # Build MeiliSearch filter
+        filters = []
+        
+        if tip_document:
+            filters.append(f"tip_document = {tip_document}")
+        
+        if status:
+            filters.append(f"status = {status}")
+        
+        # Date range filtering
+        if data_start or data_end:
+            date_filter = []
+            if data_start:
+                try:
+                    start_dt = datetime.fromisoformat(data_start)
+                    date_filter.append(f"data >= '{start_dt.isoformat()}'")
+                except ValueError:
+                    logger.warning(f"Invalid data_start format: {data_start}")
+            if data_end:
+                try:
+                    end_dt = datetime.fromisoformat(data_end)
+                    # End of day
+                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
+                    date_filter.append(f"data <= '{end_dt.isoformat()}'")
+                except ValueError:
+                    logger.warning(f"Invalid data_end format: {data_end}")
+            if date_filter:
+                filters.append(" AND ".join(date_filter))
+        
+        # Prepare search parameters
+        search_params = {
+            "limit": limit,
+            "offset": offset,
+        }
+        if filters:
+            search_params["filter"] = filters
+        
+        # Execute MeiliSearch query
+        logger.info(f"Searching MeiliSearch: q={q}, filters={filters}")
+        result = search_service.search(q, search_params)
+        
+        # Format response with relevance scores
+        hits = result.get("hits", [])
+        total_hits = result.get("estimatedTotalHits", 0)
+        processing_time_ms = result.get("processingTimeMs", 0)
+        
+        return JSONResponse({
+            "status": "success",
+            "source": "meilisearch",
+            "query": q,
+            "filters": {
+                "tip_document": tip_document,
+                "status": status,
+                "data_start": data_start,
+                "data_end": data_end,
+            },
+            "hits": hits,
+            "total_hits": total_hits,
+            "limit": limit,
+            "offset": offset,
+            "processing_time_ms": processing_time_ms,
+        })
+        
+    except Exception as e:
+        logger.warning(f"MeiliSearch search failed, falling back to PostgreSQL: {str(e)}")
+        
+        # Fallback to PostgreSQL full-text search
+        try:
+            query = db.query(Document)
+            
+            # Full-text search
+            if q:
+                search_term = f"%{q}%"
+                query = query.filter(
+                    or_(
+                        Document.title.ilike(search_term),
+                        Document.description.ilike(search_term),
+                        Document.document_number.ilike(search_term),
+                    )
+                )
+            
+            # Type filter
+            if tip_document:
+                query = query.filter(Document.document_type.astext == tip_document)
+            
+            # Status filter
+            if status:
+                query = query.filter(Document.status.astext == status)
+            
+            # Date range filter
+            filters_date = []
+            if data_start:
+                try:
+                    start_dt = datetime.fromisoformat(data_start)
+                    filters_date.append(Document.document_date >= start_dt)
+                except ValueError:
+                    pass
+            if data_end:
+                try:
+                    end_dt = datetime.fromisoformat(data_end)
+                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
+                    filters_date.append(Document.document_date <= end_dt)
+                except ValueError:
+                    pass
+            
+            if filters_date:
+                query = query.filter(and_(*filters_date))
+            
+            # Get total count before pagination
+            total_hits = query.count()
+            
+            # Apply pagination
+            documents = query.offset(offset).limit(limit).all()
+            
+            # Format response
+            hits = []
+            for doc in documents:
+                hits.append({
+                    "id": str(doc.id),
+                    "title": doc.title,
+                    "description": doc.description,
+                    "tip_document": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),
+                    "status": doc.status.value if hasattr(doc.status, "value") else str(doc.status),
+                    "document_number": doc.document_number,
+                    "amount": doc.amount,
+                    "currency": doc.currency,
+                    "data": doc.document_date.isoformat() if doc.document_date else None,
+                    "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                })
+            
+            return JSONResponse({
+                "status": "success",
+                "source": "postgresql",
+                "query": q,
+                "filters": {
+                    "tip_document": tip_document,
+                    "status": status,
+                    "data_start": data_start,
+                    "data_end": data_end,
+                },
+                "hits": hits,
+                "total_hits": total_hits,
+                "limit": limit,
+                "offset": offset,
+                "processing_time_ms": None,
+            })
+            
+        except Exception as pg_error:
+            logger.error(f"PostgreSQL fallback search also failed: {str(pg_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Search failed: {str(pg_error)}"
+            )
 
 @router.get("/{document_id}")
 async def get_document(

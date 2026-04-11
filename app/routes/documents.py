@@ -17,7 +17,7 @@ from app.schemas import DocumentUploadResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(prefix="/documents", tags=["Documents"])
 
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(

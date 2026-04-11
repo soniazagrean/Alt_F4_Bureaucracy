@@ -338,6 +338,75 @@ def extract_invoice_from_pages_task(document_id: int, minio_paths: list):
         }
 
 
+@celery_app.task
+def index_document_in_meilisearch_task(document_id: int):
+    """
+    NV-020: Index a document in MeiliSearch after processing completes.
+    
+    This task is called at the end of process_document_task to ensure
+    the document is searchable with indexed fields:
+    - Searchable: tip_document, furnizor, nr_factura, data, cod_nomenclator
+    - Filterable: tip_document, status, data
+    
+    Args:
+        document_id: Database document ID to index
+        
+    Returns:
+        Dict with indexing status
+    """
+    from app.models.document import Document
+    from app.services.search import SearchService
+    
+    try:
+        logger.info(f"Indexing document {document_id} in MeiliSearch")
+        
+        db = SessionLocal()
+        try:
+            # Fetch document and related extracted data
+            doc = db.query(Document).filter(Document.id == document_id).first()
+            if not doc:
+                logger.warning(f"Document {document_id} not found for indexing")
+                return {
+                    "status": "document_not_found",
+                    "document_id": document_id
+                }
+            
+            # Fetch extracted data as dictionary
+            from app.models.document import ExtractedData
+            extracted_rows = db.query(ExtractedData).filter(
+                ExtractedData.document_id == document_id
+            ).all()
+            
+            extracted_dict = {}
+            for row in extracted_rows:
+                extracted_dict[row.field_name] = row.field_value
+            
+            # Prepare document for indexing
+            search_service = SearchService()
+            doc_for_index = search_service.prepare_document_for_indexing(doc, extracted_dict)
+            
+            # Add to index
+            result = search_service.add_documents([doc_for_index])
+            
+            logger.info(f"Successfully indexed document {document_id}")
+            return {
+                "status": "success",
+                "document_id": document_id,
+                "indexed_fields": list(doc_for_index.keys())
+            }
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Failed to index document {document_id}: {str(e)}")
+        return {
+            "status": "error",
+            "document_id": document_id,
+            "error": str(e)
+        }
+
+
 @celery_app.task(bind=True, max_retries=3)
 def process_document_task(self, document_id: int):
     """Orchestrates the full NV-014 pipeline for a single document."""
@@ -484,6 +553,20 @@ def process_document_task(self, document_id: int):
         except Exception as exc:
             logger.error(
                 "Graph population failed for document %s: %s",
+                document_id,
+                exc,
+            )
+
+        # NV-020: Index document in MeiliSearch
+        try:
+            index_result = index_document_in_meilisearch_task.apply_async(
+                args=[document_id],
+                countdown=0
+            )
+            logger.info(f"Scheduled indexing task for document {document_id}: {index_result.id}")
+        except Exception as exc:
+            logger.error(
+                "Indexing task scheduling failed for document %s: %s",
                 document_id,
                 exc,
             )

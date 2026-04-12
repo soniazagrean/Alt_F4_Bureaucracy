@@ -72,11 +72,20 @@ async def upload_document(
     db.commit()
     db.refresh(new_doc)
     
+    # Launch Celery task for document processing
+    document_id = new_doc.id
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(contents)
+        tmp_path = tmp.name
+    
+    from app.celery_app import process_document_task
+    process_document_task.delay(document_id)
+    
     return DocumentUploadResponse(
         id=new_doc.id,
         filename=new_doc.title,
         status=new_doc.status.value,
-        message="File uploaded successfully.",
+        message="File uploaded successfully. Processing started.",
         is_duplicate=False
     )
 

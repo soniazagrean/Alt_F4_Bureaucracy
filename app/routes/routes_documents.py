@@ -1,10 +1,9 @@
-# app/routes/routes_documents.py
 from datetime import timedelta, datetime
 from typing import Any, Optional, List
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 import os
@@ -235,11 +234,7 @@ async def get_document(
     preview_url = None
     try:
         bucket_name, object_name = doc.file_path.split("/", 1)
-        preview_url = storage_service.client.presigned_get_object(
-            bucket_name,
-            object_name,
-            expires=timedelta(minutes=15),
-        )
+        preview_url = storage_service.get_presigned_url(bucket_name, object_name, expires_minutes=15)
     except Exception:
         preview_url = None
 
@@ -312,6 +307,76 @@ async def get_document(
         return JSONResponse(payload, status_code=202)
 
     return JSONResponse(payload)
+
+
+@router.post("/reindex/meilisearch")
+async def reindex_documents(
+    db: Session = Depends(get_db),
+    _=Depends(require_roles(RBACRole.ADMIN)),
+):
+    """Rebuild MeiliSearch index from database (admin only)"""
+    try:
+        # Get all documents from database
+        documents = db.query(Document).all()
+        
+        if not documents:
+            return JSONResponse({"message": "No documents to index", "count": 0})
+        
+        # Prepare documents for indexing
+        indexed_docs = []
+        search_svc = SearchService()
+        
+        for doc in documents:
+            prepared = SearchService.prepare_document_for_indexing(doc)
+            if prepared:
+                indexed_docs.append(prepared)
+        
+        # Add to MeiliSearch
+        search_svc.ensure_index_exists()
+        search_svc.add_documents(indexed_docs)
+        
+        logger.info(f"Reindexed {len(indexed_docs)} documents in MeiliSearch")
+        return JSONResponse({
+            "message": "Reindexing completed",
+            "count": len(indexed_docs),
+            "documents": [{"id": d["id"], "title": d.get("title", "N/A")} for d in indexed_docs[:5]]
+        })
+    
+    except Exception as e:
+        logger.error(f"Reindexing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Reindexing failed: {str(e)}")
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+):
+    """Download document PDF file"""
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        # Parse file path from MinIO
+        bucket_name, object_name = doc.file_path.split("/", 1)
+        
+        # Download file from MinIO
+        storage_service = storage
+        response = storage_service.client.get_object(bucket_name, object_name)
+        
+        # Return as streaming response
+        return StreamingResponse(
+            iter(response.stream(amt=1024*1024)),
+            media_type=doc.mime_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{doc.title}\""
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error downloading document {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download document: {str(e)}")
 
 
 @router.get("/{document_id}/related", response_model=RelatedDocumentsResponse)

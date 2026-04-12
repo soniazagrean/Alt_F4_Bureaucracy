@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 celery_app = Celery(
     'alt_f4_bureaucracy',
     broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL
+    backend=settings.REDIS_URL.replace('/0', '/1')
 )
 
 # Configure Celery

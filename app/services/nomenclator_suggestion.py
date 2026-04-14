@@ -355,6 +355,11 @@ CRITICAL REQUIREMENTS:
                             suggestion_data["nivel_confidentialitate"]
                         )
                     
+                    # Ensure confidence is valid (not None, and within 0-1 range)
+                    confidence = suggestion_data.get("confidence")
+                    if confidence is None or (isinstance(confidence, (int, float)) and (confidence < 0 or confidence > 1)):
+                        suggestion_data["confidence"] = 0.7  # Default confidence
+                    
                     suggestion = NomenclatorSuggestion(**suggestion_data)
                     suggestions.append(suggestion)
                     

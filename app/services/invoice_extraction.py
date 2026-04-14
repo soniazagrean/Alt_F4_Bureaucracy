@@ -32,7 +32,7 @@ class InvoiceExtractionService:
             raise ValueError("OPENAI_API_KEY not configured in settings or provided as argument")
         
         self.base_url = "https://api.openai.com/v1/chat/completions"
-        self.model = "gpt-4-vision"
+        self.model = "gpt-4o"
     
     @staticmethod
     def _image_to_base64(image_path: str) -> str:
@@ -130,6 +130,7 @@ IMPORTANT: You MUST respond with ONLY valid JSON in this exact format, nothing e
     "furnizor": "supplier/vendor name",
     "CUI": "company tax ID (10 digits for Romania)",
     "IBAN": "bank account IBAN or null",
+    "currency": "currency code (EUR, RON, USD, GBP, etc) or null",
     "items": [
         {{
             "description": "item description",

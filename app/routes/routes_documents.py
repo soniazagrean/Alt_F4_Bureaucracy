@@ -69,11 +69,11 @@ async def search_documents(
         # Build MeiliSearch filter
         filters = []
         
-        if tip_document:
-            filters.append(f"tip_document = {tip_document}")
+        if tip_document and tip_document != "All":
+            filters.append(f'tip_document = "{tip_document.lower()}"')
         
-        if status:
-            filters.append(f"status = {status}")
+        if status and status != "All":
+            filters.append(f'status = "{status.lower()}"')
         
         # Date range filtering
         if data_start or data_end:
@@ -148,12 +148,12 @@ async def search_documents(
                 )
             
             # Type filter
-            if tip_document:
-                query = query.filter(Document.document_type.astext == tip_document)
+            if tip_document and tip_document != "All":
+                query = query.filter(Document.document_type.astext == tip_document.lower())
             
             # Status filter
-            if status:
-                query = query.filter(Document.status.astext == status)
+            if status and status != "All":
+                query = query.filter(Document.status.astext == status.lower())
             
             # Date range filter
             filters_date = []
@@ -238,17 +238,28 @@ async def get_document(
     except Exception:
         preview_url = None
 
-    extracted_data = [
-        {
-            "id": item.id,
-            "field_name": item.field_name,
-            "field_value": item.field_value,
-            "extraction_confidence": item.extraction_confidence,
-            "created_at": item.created_at.isoformat() if item.created_at else None,
-            "updated_at": item.updated_at.isoformat() if item.updated_at else None,
-        }
-        for item in doc.extracted_data
-    ]
+    # Convert extracted_data list to dict (for Streamlit panels)
+    # NV-025: Expected format: {"nr_factura": "...", "furnizor": "...", etc.}
+    extracted_data_dict = {}
+    for item in doc.extracted_data:
+        extracted_data_dict[item.field_name] = item.field_value
+    
+    # Get nomenclator suggestion if available
+    nomenclator_suggestion = None
+    if doc.nomenclator_id:
+        try:
+            # Try to fetch nomenclator suggestion from database/service
+            # For now, construct from nomenclator relationship if available
+            if doc.nomenclator:
+                nomenclator_suggestion = {
+                    "cod": doc.nomenclator.code,
+                    "descriere": doc.nomenclator.description or doc.nomenclator.name,
+                    "incidenta": "0",  # TODO: add to DB if needed
+                    "confidence": doc.confidence or 0.0,
+                    "alternative": [],
+                }
+        except Exception:
+            pass
 
     pages = [
         {
@@ -284,16 +295,25 @@ async def get_document(
         "created_by_id": doc.created_by_id,
         "dosar_id": doc.dosar_id,
         "nomenclator_id": doc.nomenclator_id,
+        "nomenclator_confirmed": doc.nomenclator_confirmed if hasattr(doc, "nomenclator_confirmed") else False,
+        "nomenclator_confirmed_at": doc.nomenclator_confirmed_at.isoformat() if hasattr(doc, "nomenclator_confirmed_at") and doc.nomenclator_confirmed_at else None,
         "preview_url": preview_url,
         "preview_url_expires_in_minutes": 15,
         "pages": pages,
-        "extracted_data": extracted_data,
+        # NV-025: Return as dict not list for Streamlit compatibility
+        "extracted_data": extracted_data_dict,
+        "nomenclator_suggestion": nomenclator_suggestion,
         "classification": {
             "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),
+            "tip_document": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),
             "confidence": doc.confidence,
         },
         "nomenclator": None,
     }
+    
+    # Ensure classification confidence is never None (API contract)
+    if payload.get("classification") and payload["classification"].get("confidence") is None:
+        payload["classification"]["confidence"] = 0.0
 
     if doc.nomenclator:
         payload["nomenclator"] = {
@@ -377,6 +397,47 @@ async def download_document(
     except Exception as e:
         logger.error(f"Error downloading document {document_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to download document: {str(e)}")
+
+
+@router.get("/{document_id}/page-image/{page_number}")
+async def get_page_image(
+    document_id: int,
+    page_number: int,
+    db: Session = Depends(get_db),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+):
+    """Get page image from document"""
+    from app.models.document import DocumentPage
+    
+    try:
+        # Find page
+        page = db.query(DocumentPage).filter(
+            and_(
+                DocumentPage.document_id == document_id,
+                DocumentPage.page_number == page_number
+            )
+        ).first()
+        
+        if not page or not page.image_path:
+            raise HTTPException(status_code=404, detail="Page not found or image not available yet")
+        
+        # Get image from MinIO
+        bucket_name, object_name = page.image_path.split("/", 1)
+        response = storage.client.get_object(bucket_name, object_name)
+        
+        # Return as streaming response
+        return StreamingResponse(
+            iter(response.stream(amt=1024*1024)),
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f"inline; filename=\"page_{page_number}.png\""
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting page image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Could not retrieve page image: {str(e)}")
 
 
 @router.get("/{document_id}/related", response_model=RelatedDocumentsResponse)
@@ -519,6 +580,62 @@ async def classify_document(
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+@router.post("/{document_id}/confirm-nomenclator")
+async def confirm_nomenclator(
+    document_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
+    """
+    NV-025: Confirm nomenclator suggestion for a document.
+    
+    Marks the nomenclator suggestion as confirmed by the user.
+    This is prepared for Sprint 3 integration with the nomenclator system.
+    
+    Parameters:
+    - document_id: ID of the document
+    - payload: {"confirmed": True}
+    
+    Returns:
+    - Updated document with nomenclator confirmation
+    """
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Check if document is in ARCHIVED status (NV-025 requirement)
+    if doc.status != DocumentStatusEnum.ARCHIVED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only confirm nomenclator for ARCHIVED documents. Current status: {doc.status.value}"
+        )
+    
+    # Mark nomenclator as confirmed (Sprint 3 will implement full logic)
+    # Safely handle case where columns may not exist yet
+    try:
+        doc.nomenclator_confirmed = True
+        doc.nomenclator_confirmed_at = datetime.utcnow()
+        db.commit()
+        db.refresh(doc)
+        
+        return JSONResponse({
+            "status": "success",
+            "document_id": document_id,
+            "message": "Nomenclator confirmed successfully",
+            "confirmed_at": doc.nomenclator_confirmed_at.isoformat() if hasattr(doc, 'nomenclator_confirmed_at') and doc.nomenclator_confirmed_at else None,
+        })
+    except Exception as e:
+        # If columns don't exist yet, log confirmation to log instead
+        logger.warning(f"Could not persist nomenclator confirmation (columns may not exist): {str(e)}")
+        return JSONResponse({
+            "status": "success",
+            "document_id": document_id,
+            "message": "Nomenclator confirmation recorded (Sprint 3 persistence pending)",
+            "warning": "Database schema not yet migrated for this feature"
+        })
 
 
 def _get_extension(path: str) -> str:

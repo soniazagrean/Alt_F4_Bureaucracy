@@ -72,6 +72,10 @@ class Document(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     archived_at = Column(DateTime, nullable=True)
+    
+    # NV-025: Nomenclator confirmation (Sprint 3)
+    nomenclator_confirmed = Column(Boolean, default=False)
+    nomenclator_confirmed_at = Column(DateTime, nullable=True)
 
     # Relationships
     dosar = relationship("Dosar", back_populates="documents")

@@ -13,6 +13,7 @@ import streamlit as st
 import requests
 import json
 from datetime import datetime
+import base64
 
 # Page config
 st.set_page_config(page_title="View Documents", page_icon="📄", layout="wide")
@@ -21,7 +22,7 @@ st.title("View Documents")
 st.markdown("Search, filter, and view processed documents with extracted data.")
 
 # Configuration
-API_BASE_URL = "http://fastapi:8000"
+API_BASE_URL = "http://localhost:8000"
 
 # ============================================================================
 # SIDEBAR - Authentication & Filters
@@ -154,7 +155,7 @@ if st.session_state.auth_token:
                 # Show page previews
                 pages = doc.get("pages", [])
                 if pages:
-                    st.markdown("### Document Pages Preview")
+                    st.markdown("### 📄 Document Pages Preview")
                     
                     if len(pages) > 1:
                         # Multiple pages - show as carousel with tabs
@@ -164,10 +165,45 @@ if st.session_state.auth_token:
                                 page_num = page.get('page_number', 1)
                                 st.markdown(f"**Page {page_num}**")
                                 
+                                # Show page image/preview if available
+                                image_data = page.get("image_data") or page.get("page_image")
+                                image_path = page.get("image_path")
+                                
+                                if image_data:
+                                    try:
+                                        # Handle base64 or URL from image_data field
+                                        if isinstance(image_data, str):
+                                            if image_data.startswith(('http://', 'https://')):
+                                                st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                            elif image_data.startswith('data:image'):
+                                                st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                            else:
+                                                st.image(base64.b64decode(image_data), use_container_width=True, caption=f"Page {page_num} Preview")
+                                        else:
+                                            st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                    except Exception as e:
+                                        st.warning(f"Could not display image for page {page_num}: {str(e)}")
+                                elif image_path:
+                                    # Try to download image from MinIO via presigned URL
+                                    try:
+                                        img_response = requests.get(
+                                            f"{API_BASE_URL}/documents/{doc_id}/page-image/{page_num}",
+                                            headers=headers,
+                                            timeout=10
+                                        )
+                                        if img_response.status_code == 200:
+                                            st.image(img_response.content, use_container_width=True, caption=f"Page {page_num} Preview")
+                                        else:
+                                            st.info(f"Page {page_num} image not available yet (processing...)")
+                                    except Exception as e:
+                                        st.info(f"Page {page_num} image not available yet (still processing...)")
+                                else:
+                                    st.info(f"No preview image available for page {page_num} (processing...)")
+                                
                                 # Show text content if available (OCR)
                                 text_content = page.get("text_content", "")
                                 if text_content:
-                                    with st.expander(f"Text Content (Page {page_num})"):
+                                    with st.expander(f"📝 Text Content (Page {page_num})"):
                                         st.text_area(
                                             f"Text from page {page_num}",
                                             value=text_content,
@@ -181,9 +217,44 @@ if st.session_state.auth_token:
                         page_num = page.get('page_number', 1)
                         st.markdown(f"**Page {page_num}**")
                         
+                        # Show page image/preview if available
+                        image_data = page.get("image_data") or page.get("page_image")
+                        image_path = page.get("image_path")
+                        
+                        if image_data:
+                            try:
+                                # Handle base64 or URL from image_data field
+                                if isinstance(image_data, str):
+                                    if image_data.startswith(('http://', 'https://')):
+                                        st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                    elif image_data.startswith('data:image'):
+                                        st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                    else:
+                                        st.image(base64.b64decode(image_data), use_container_width=True, caption=f"Page {page_num} Preview")
+                                else:
+                                    st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                            except Exception as e:
+                                st.warning(f"Could not display image: {str(e)}")
+                        elif image_path:
+                            # Try to download image from MinIO via presigned URL
+                            try:
+                                img_response = requests.get(
+                                    f"{API_BASE_URL}/documents/{doc_id}/page-image/{page_num}",
+                                    headers=headers,
+                                    timeout=10
+                                )
+                                if img_response.status_code == 200:
+                                    st.image(img_response.content, use_container_width=True, caption=f"Page {page_num} Preview")
+                                else:
+                                    st.info("Page image not available yet (processing...)")
+                            except Exception as e:
+                                st.info("Page image not available yet (still processing...)")
+                        else:
+                            st.info("No preview image available (processing...)")
+                        
                         text_content = page.get("text_content", "")
                         if text_content:
-                            with st.expander(f"Extracted Text Content"):
+                            with st.expander(f"📝 Extracted Text Content"):
                                 st.text_area(
                                     "Text content",
                                     value=text_content,
@@ -194,8 +265,8 @@ if st.session_state.auth_token:
                 
                 st.divider()
                 
-                # Main details
-                col1, col2, col3 = st.columns(3)
+                # Main details with action buttons
+                col1, col2, col3, col4 = st.columns([1.5, 1.5, 1.5, 1.2])
                 
                 with col1:
                     st.metric("Document Number", doc.get("document_number", "N/A"))
@@ -206,27 +277,113 @@ if st.session_state.auth_token:
                 with col3:
                     st.metric("Document Type", doc.get("document_type", "N/A"))
                 
-                # Extracted data
-                if doc.get("extracted_data") or doc.get("description"):
-                    st.markdown("### Extracted Data")
+                with col4:
+                    # Show confirm button if document is ready for nomenclator confirmation
+                    # Show at ARCHIVED or VALIDATED status, or if nomenclator NOT yet confirmed
+                    nomenclator_confirmed = doc.get("nomenclator_confirmed", False)
                     
-                    extracted = doc.get("extracted_data") or {}
+                    if status in ["ARCHIVED", "VALIDATED"] and not nomenclator_confirmed:
+                        if st.button("✓ Confirmă nomenclator", use_container_width=True, type="primary"):
+                            try:
+                                confirm_response = requests.post(
+                                    f"{API_BASE_URL}/documents/{doc_id}/confirm-nomenclator",
+                                    headers=headers,
+                                    json={"confirmed": True},
+                                    timeout=10
+                                )
+                                if confirm_response.status_code in [200, 202]:
+                                    st.success("Nomenclator confirmed!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Confirmation failed: {confirm_response.status_code}")
+                            except Exception as e:
+                                st.error(f"Error: {str(e)}")
+                    elif nomenclator_confirmed:
+                        st.success("✓ Nomenclator confirmed")
+                
+                # ============================================================================
+                # EXTRACTED DATA - Collapsible Panels
+                # ============================================================================
+                
+                extracted = doc.get("extracted_data") or {}
+                classification = doc.get("classification") or {}
+                
+                if isinstance(extracted, dict) or isinstance(classification, dict):
+                    st.markdown("### Informații Extrase")
                     
-                    if isinstance(extracted, dict):
-                        col1, col2 = st.columns(2)
+                    # Panel 1: Invoice Data Extraction
+                    with st.expander("📋 Date Extrase Factură", expanded=True):
+                        if isinstance(extracted, dict) and extracted:
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write(f"**Numărul Facturii:** `{extracted.get('nr_factura', 'N/A')}`")
+                                st.write(f"**Furnizor:** {extracted.get('furnizor', 'N/A')}")
+                                st.write(f"**Cod Fiscal Furnizor:** {extracted.get('cod_fiscal', 'N/A')}")
+                                st.write(f"**Serie Factură:** {extracted.get('serie_factura', 'N/A')}")
+                            
+                            with col2:
+                                st.write(f"**Data Facturii:** {extracted.get('data', 'N/A')}")
+                                st.write(f"**Total:** {extracted.get('total', 'N/A')}")
+                                st.write(f"**Monedă:** {extracted.get('moneda', 'RON')}")
+                                st.write(f"**Status Factură:** {extracted.get('status_factura', 'N/A')}")
+                            
+                            # Additional invoice details
+                            if extracted.get('descriere'):
+                                st.write(f"**Descriere:** {extracted.get('descriere')}")
+                        else:
+                            st.info("Nu au fost extrase date de factură")
+                    
+                    # Panel 2: Document Classification
+                    with st.expander("🏷️ Clasificare Document"):
+                        if isinstance(classification, dict) and classification:
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write(f"**Tip Document:** {classification.get('tip_document', 'N/A')}")
+                                st.write(f"**Sub-tip:** {classification.get('subtip', 'N/A')}")
+                                st.write(f"**Categorie:** {classification.get('categorie', 'N/A')}")
+                            
+                            with col2:
+                                confidence = classification.get('confidence', 0)
+                                confidence = confidence if confidence is not None else 0
+                                st.metric("Încredere Clasificare", f"{confidence*100:.1f}%")
+                                st.write(f"**Model:** {classification.get('model', 'AI')}")
+                            
+                            if classification.get('caracteristici'):
+                                st.write(f"**Caracteristici:** {', '.join(classification.get('caracteristici', []))}")
+                        else:
+                            st.info("Nu au fost completate date de clasificare")
+                    
+                    # Panel 3: Nomenclator Suggestions
+                    with st.expander("💡 Sugestii Nomenclator"):
+                        nomenclator_data = doc.get("nomenclator_suggestion") or {}
                         
-                        with col1:
-                            st.write(f"**Invoice Number:** {extracted.get('nr_factura', 'N/A')}")
-                            st.write(f"**Supplier:** {extracted.get('furnizor', 'N/A')}")
-                            st.write(f"**Fiscal Code:** {extracted.get('cod_fiscal', 'N/A')}")
-                        
-                        with col2:
-                            st.write(f"**Date:** {extracted.get('data', 'N/A')}")
-                            st.write(f"**Total:** {extracted.get('total', 'N/A')}")
-                            st.write(f"**Status:** {extracted.get('status_factura', 'N/A')}")
+                        if isinstance(nomenclator_data, dict) and nomenclator_data:
+                            col1, col2 = st.columns([2, 1])
+                            
+                            with col1:
+                                st.write(f"**Cod Nomenclator Sugerat:** `{nomenclator_data.get('cod', 'N/A')}`")
+                                st.write(f"**Descriere:** {nomenclator_data.get('descriere', 'N/A')}")
+                                st.write(f"**Incidenţă (%):** {nomenclator_data.get('incidenta', '0')} %")
+                            
+                            with col2:
+                                confidence = nomenclator_data.get('confidence', 0)
+                                confidence = confidence if confidence is not None else 0
+                                st.metric("Încredere Sugestie", f"{confidence*100:.1f}%")
+                            
+                            # Alternate suggestions
+                            alternatives = nomenclator_data.get('alternative', [])
+                            if alternatives:
+                                st.write("**Alte Sugestii:**")
+                                for alt in alternatives:
+                                    alt_confidence = alt.get('confidence', 0)
+                                    alt_confidence = alt_confidence if alt_confidence is not None else 0
+                                    st.write(f"- `{alt.get('cod')}` - {alt.get('descriere')} ({alt_confidence*100:.1f}%)")
+                        else:
+                            st.info("Nu sunt disponibile sugestii de nomenclator încă")
                     
-                    if doc.get("description"):
-                        st.markdown(f"**Description:** {doc.get('description')}")
+                    st.divider()
                 
                 # Timeline
                 st.markdown("### Processing Timeline")
@@ -323,6 +480,14 @@ if st.session_state.auth_token:
             total = st.session_state.search_results.get("total_hits", 0)
             
             st.markdown(f"### Results: {len(hits)} of {total} documents")
+            
+            # Debug info
+            with st.expander("🔍 Debug Search Info"):
+                st.write(f"**Query:** {search_params}")
+                st.write(f"**Total found:** {total}")
+                st.write(f"**Shown:** {len(hits)}")
+                if not hits:
+                    st.warning("Try broader search or check that documents are indexed in Meilisearch")
             
             if hits:
                 # Display results as clickable cards

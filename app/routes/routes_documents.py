@@ -238,11 +238,21 @@ async def get_document(
     except Exception:
         preview_url = None
 
-    # Convert extracted_data list to dict (for Streamlit panels)
-    # NV-025: Expected format: {"nr_factura": "...", "furnizor": "...", etc.}
+    # Keep both list and map forms for backward compatibility.
     extracted_data_dict = {}
+    extracted_data_list = []
     for item in doc.extracted_data:
         extracted_data_dict[item.field_name] = item.field_value
+        extracted_data_list.append(
+            {
+                "id": item.id,
+                "field_name": item.field_name,
+                "field_value": item.field_value,
+                "extraction_confidence": item.extraction_confidence,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+            }
+        )
     
     # Get nomenclator suggestion if available
     nomenclator_suggestion = None
@@ -300,8 +310,10 @@ async def get_document(
         "preview_url": preview_url,
         "preview_url_expires_in_minutes": 15,
         "pages": pages,
-        # NV-025: Return as dict not list for Streamlit compatibility
-        "extracted_data": extracted_data_dict,
+        # Legacy list contract used by existing API tests/consumers.
+        "extracted_data": extracted_data_list,
+        # Map format for UI consumers that render key-value extraction panels.
+        "extracted_data_map": extracted_data_dict,
         "nomenclator_suggestion": nomenclator_suggestion,
         "classification": {
             "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),

@@ -40,6 +40,7 @@ class UserMeResponse(BaseModel):
     email: EmailStr
     full_name: Optional[str]
     role: RoleEnum
+    rbac_role: str
     is_active: bool
     created_at: datetime
 

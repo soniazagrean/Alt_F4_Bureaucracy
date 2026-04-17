@@ -305,7 +305,13 @@ if st.session_state.auth_token:
                 # EXTRACTED DATA - Collapsible Panels
                 # ============================================================================
                 
-                extracted = doc.get("extracted_data") or {}
+                extracted = doc.get("extracted_data_map") or doc.get("extracted_data") or {}
+                if isinstance(extracted, list):
+                    extracted = {
+                        str(item.get("field_name")): item.get("field_value")
+                        for item in extracted
+                        if isinstance(item, dict) and item.get("field_name")
+                    }
                 classification = doc.get("classification") or {}
                 
                 if isinstance(extracted, dict) or isinstance(classification, dict):

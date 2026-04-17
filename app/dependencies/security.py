@@ -1,4 +1,5 @@
 from enum import Enum
+from dataclasses import dataclass
 from typing import Callable
 
 from fastapi import Depends, HTTPException, status
@@ -17,6 +18,12 @@ class RBACRole(str, Enum):
 
 
 security = HTTPBearer(auto_error=True)
+
+
+@dataclass
+class AuthenticatedUserContext:
+    user: User
+    rbac_role: RBACRole
 
 
 def map_user_to_rbac_role(user: User) -> RBACRole:
@@ -40,14 +47,22 @@ def get_current_user(
     return auth_service.get_current_user_from_access_token(db, credentials.credentials)
 
 
+def get_current_user_context(
+    current_user: User = Depends(get_current_user),
+) -> AuthenticatedUserContext:
+    return AuthenticatedUserContext(
+        user=current_user,
+        rbac_role=map_user_to_rbac_role(current_user),
+    )
+
+
 def require_roles(*allowed: RBACRole) -> Callable[[User], User]:
-    def checker(current_user: User = Depends(get_current_user)) -> User:
-        user_role = map_user_to_rbac_role(current_user)
-        if user_role not in allowed:
+    def checker(context: AuthenticatedUserContext = Depends(get_current_user_context)) -> User:
+        if context.rbac_role not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions",
             )
-        return current_user
+        return context.user
 
     return checker

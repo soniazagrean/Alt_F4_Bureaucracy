@@ -89,6 +89,7 @@ def test_register_login_and_me_flow(client: TestClient):
     me_body = me_resp.json()
     assert me_body["username"] == "alice"
     assert me_body["email"] == "alice@example.com"
+    assert me_body["rbac_role"] == "AUDITOR"
 
 
 def test_refresh_rotates_and_old_refresh_becomes_invalid(client: TestClient):

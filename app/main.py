@@ -99,3 +99,7 @@ app.include_router(documents_detail_router)
 # Include archive router
 from app.routes.routes_archive import router as archive_router
 app.include_router(archive_router)
+
+# Include audit trail router
+from app.routes.audit_trail import router as audit_trail_router
+app.include_router(audit_trail_router)

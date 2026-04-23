@@ -2,7 +2,7 @@ from datetime import timedelta, datetime
 from typing import Any, Optional, List
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
@@ -11,9 +11,13 @@ import tempfile
 
 from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
+from app.models.audit import AuditActionEnum
 from app.models.document import Document, DocumentStatusEnum, ExtractedData
+from app.models.user import User
+from app.schemas import DocumentUpdateRequest
 from app.schemas_classification import ClassificationResponse
 from app.schemas_related import RelatedDocumentsResponse, RelationType
+from app.services.audit_service import get_request_ip, log_audit_event, serialize_audit_value
 from app.services.document_classification import DocumentClassificationService
 from app.services import graph_service
 from app.services.storage import StorageService, storage   # existing MinIO helper
@@ -223,12 +227,24 @@ async def search_documents(
 @router.get("/{document_id}")
 async def get_document(
     document_id: int,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
 ):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action=AuditActionEnum.INSPECT,
+        resource_type="document",
+        resource_id=doc.id,
+        document_id=doc.id,
+        description="Document inspected",
+        ip_address=get_request_ip(request),
+    )
 
     storage_service = storage
     preview_url = None
@@ -520,8 +536,73 @@ async def get_related_documents(
     )
 
 @router.put("/{document_id}")
-async def update_document(document_id: int, _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR))):
-    return JSONResponse({"detail": "not implemented"}, status_code=501)
+async def update_document(
+    document_id: int,
+    payload: DocumentUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if payload.document_number and payload.document_number != doc.document_number:
+        existing = (
+            db.query(Document)
+            .filter(Document.document_number == payload.document_number, Document.id != document_id)
+            .first()
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Document number already exists")
+
+    changes: dict[str, dict[str, object]] = {}
+
+    def apply_change(field_name: str, new_value: object) -> None:
+        if new_value is None:
+            return
+        current_value = getattr(doc, field_name)
+        if new_value != current_value:
+            changes[field_name] = {
+                "from": serialize_audit_value(current_value),
+                "to": serialize_audit_value(new_value),
+            }
+            setattr(doc, field_name, new_value)
+
+    apply_change("document_number", payload.document_number)
+    apply_change("title", payload.title)
+    apply_change("description", payload.description)
+    apply_change("amount", payload.amount)
+    apply_change("currency", payload.currency.upper() if payload.currency else payload.currency)
+    apply_change("document_date", payload.document_date)
+    apply_change("document_type", payload.document_type)
+
+    if not changes:
+        return JSONResponse({
+            "status": "no_changes",
+            "document_id": document_id,
+        })
+
+    db.commit()
+    db.refresh(doc)
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action=AuditActionEnum.MANUAL_EDIT,
+        resource_type="document",
+        resource_id=doc.id,
+        document_id=doc.id,
+        description="Document updated manually",
+        changes=changes,
+        ip_address=get_request_ip(request),
+    )
+
+    return JSONResponse({
+        "status": "success",
+        "document_id": doc.id,
+        "updated_fields": sorted(changes.keys()),
+    })
 
 @router.delete("/{document_id}")
 async def delete_document(document_id: int, _=Depends(require_roles(RBACRole.ADMIN))):
@@ -537,8 +618,9 @@ async def delete_document(document_id: int, _=Depends(require_roles(RBACRole.ADM
 )
 async def classify_document(
     document_id: int,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
     """
     Descarcă prima pagină a documentului din MinIO, o trimite la
@@ -577,11 +659,36 @@ async def classify_document(
             )
 
         # 5. Persist result
+        previous_type = doc.document_type
+        previous_confidence = doc.confidence
         doc.document_type = response.data.tip_document
         doc.confidence = response.data.confidence
         doc.status = DocumentStatusEnum.CLASSIFIED
         db.commit()
         db.refresh(doc)
+
+        changes = {
+            "document_type": {
+                "from": serialize_audit_value(previous_type),
+                "to": serialize_audit_value(doc.document_type),
+            },
+            "confidence": {
+                "from": serialize_audit_value(previous_confidence),
+                "to": serialize_audit_value(doc.confidence),
+            },
+        }
+
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action=AuditActionEnum.CLASSIFY,
+            resource_type="document",
+            resource_id=doc.id,
+            document_id=doc.id,
+            description="Document classified",
+            changes=changes,
+            ip_address=get_request_ip(request),
+        )
 
         return ClassificationResponse(
             success=True,
@@ -598,8 +705,9 @@ async def classify_document(
 async def confirm_nomenclator(
     document_id: int,
     payload: dict,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
     """
     NV-025: Confirm nomenclator suggestion for a document.
@@ -632,6 +740,18 @@ async def confirm_nomenclator(
         doc.nomenclator_confirmed_at = datetime.utcnow()
         db.commit()
         db.refresh(doc)
+
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action=AuditActionEnum.APPROVE,
+            resource_type="document",
+            resource_id=doc.id,
+            document_id=doc.id,
+            description="Nomenclator confirmation approved",
+            changes={"nomenclator_confirmed": True},
+            ip_address=get_request_ip(request),
+        )
         
         return JSONResponse({
             "status": "success",
@@ -642,6 +762,19 @@ async def confirm_nomenclator(
     except Exception as e:
         # If columns don't exist yet, log confirmation to log instead
         logger.warning(f"Could not persist nomenclator confirmation (columns may not exist): {str(e)}")
+        db.rollback()
+
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action=AuditActionEnum.APPROVE,
+            resource_type="document",
+            resource_id=doc.id,
+            document_id=doc.id,
+            description="Nomenclator confirmation approved (db pending)",
+            changes={"nomenclator_confirmed": True},
+            ip_address=get_request_ip(request),
+        )
         return JSONResponse({
             "status": "success",
             "document_id": document_id,

@@ -570,13 +570,7 @@ def process_document_task(self, document_id: int):
 
         suggestion_result = nomenclator_service.suggest_nomenclator(request_body, num_suggestions=3)
         previous_status = doc.status
-        if suggestion_result.success and suggestion_result.primary_suggestion:
-            doc.status = DocumentStatusEnum.ARCHIVED
-            doc.archived_at = datetime.now()
-        else:
-            # still success but mark completed pipeline
-            doc.status = DocumentStatusEnum.ARCHIVED
-            doc.archived_at = datetime.now()
+        doc.status = DocumentStatusEnum.REVIEW
 
         # Final commit
         db.commit()
@@ -593,20 +587,16 @@ def process_document_task(self, document_id: int):
             log_audit_event(
                 db=db,
                 user=system_user,
-                action=AuditActionEnum.ARCHIVE,
+                action=AuditActionEnum.UPDATE,
                 resource_type="document",
                 resource_id=doc.id,
                 document_id=doc.id,
-                description="Document archived by pipeline",
+                description="Document ready for review",
                 changes={
                     "status": {
                         "from": serialize_audit_value(previous_status),
                         "to": serialize_audit_value(doc.status),
-                    },
-                    "archived_at": {
-                        "from": None,
-                        "to": serialize_audit_value(doc.archived_at),
-                    },
+                    }
                 },
                 ip_address=None,
             )

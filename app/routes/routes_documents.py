@@ -12,9 +12,14 @@ import tempfile
 from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
 from app.models.audit import AuditActionEnum
+from app.models.archive import Dosar, NomenclatorEntry
 from app.models.document import Document, DocumentStatusEnum, ExtractedData
 from app.models.user import User
-from app.schemas import DocumentUpdateRequest
+from app.schemas import (
+    DocumentUpdateRequest,
+    DocumentCorrectionRequest,
+    NomenclatorConfirmationRequest,
+)
 from app.schemas_classification import ClassificationResponse
 from app.schemas_related import RelatedDocumentsResponse, RelationType
 from app.services.audit_service import get_request_ip, log_audit_event, serialize_audit_value
@@ -577,6 +582,13 @@ async def update_document(
     apply_change("document_date", payload.document_date)
     apply_change("document_type", payload.document_type)
 
+    if changes and doc.status == DocumentStatusEnum.RETURNED:
+        changes["status"] = {
+            "from": serialize_audit_value(doc.status),
+            "to": serialize_audit_value(DocumentStatusEnum.REVIEW),
+        }
+        doc.status = DocumentStatusEnum.REVIEW
+
     if not changes:
         return JSONResponse({
             "status": "no_changes",
@@ -704,83 +716,265 @@ async def classify_document(
 @router.post("/{document_id}/confirm-nomenclator")
 async def confirm_nomenclator(
     document_id: int,
-    payload: dict,
+    payload: NomenclatorConfirmationRequest,
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
-    """
-    NV-025: Confirm nomenclator suggestion for a document.
-    
-    Marks the nomenclator suggestion as confirmed by the user.
-    This is prepared for Sprint 3 integration with the nomenclator system.
-    
-    Parameters:
-    - document_id: ID of the document
-    - payload: {"confirmed": True}
-    
-    Returns:
-    - Updated document with nomenclator confirmation
-    """
+    """Confirm nomenclator/dosar suggestion for a document in review."""
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Check if document is in ARCHIVED status (NV-025 requirement)
-    if doc.status != DocumentStatusEnum.ARCHIVED:
+
+    if doc.status != DocumentStatusEnum.REVIEW:
         raise HTTPException(
             status_code=400,
-            detail=f"Can only confirm nomenclator for ARCHIVED documents. Current status: {doc.status.value}"
+            detail=f"Can only confirm nomenclator during REVIEW. Current status: {doc.status.value}",
         )
-    
-    # Mark nomenclator as confirmed (Sprint 3 will implement full logic)
-    # Safely handle case where columns may not exist yet
-    try:
-        doc.nomenclator_confirmed = True
-        doc.nomenclator_confirmed_at = datetime.utcnow()
-        db.commit()
-        db.refresh(doc)
 
-        log_audit_event(
-            db=db,
-            user=current_user,
-            action=AuditActionEnum.APPROVE,
-            resource_type="document",
-            resource_id=doc.id,
-            document_id=doc.id,
-            description="Nomenclator confirmation approved",
-            changes={"nomenclator_confirmed": True},
-            ip_address=get_request_ip(request),
-        )
-        
-        return JSONResponse({
-            "status": "success",
-            "document_id": document_id,
-            "message": "Nomenclator confirmed successfully",
-            "confirmed_at": doc.nomenclator_confirmed_at.isoformat() if hasattr(doc, 'nomenclator_confirmed_at') and doc.nomenclator_confirmed_at else None,
-        })
-    except Exception as e:
-        # If columns don't exist yet, log confirmation to log instead
-        logger.warning(f"Could not persist nomenclator confirmation (columns may not exist): {str(e)}")
-        db.rollback()
+    changes: dict[str, dict[str, object]] = {}
 
-        log_audit_event(
-            db=db,
-            user=current_user,
-            action=AuditActionEnum.APPROVE,
-            resource_type="document",
-            resource_id=doc.id,
-            document_id=doc.id,
-            description="Nomenclator confirmation approved (db pending)",
-            changes={"nomenclator_confirmed": True},
-            ip_address=get_request_ip(request),
-        )
+    if payload.nomenclator_id is not None:
+        nomenclator = db.query(NomenclatorEntry).filter(NomenclatorEntry.id == payload.nomenclator_id).first()
+        if not nomenclator:
+            raise HTTPException(status_code=400, detail="Invalid nomenclator_id")
+        if payload.nomenclator_id != doc.nomenclator_id:
+            changes["nomenclator_id"] = {
+                "from": serialize_audit_value(doc.nomenclator_id),
+                "to": serialize_audit_value(payload.nomenclator_id),
+            }
+            doc.nomenclator_id = payload.nomenclator_id
+
+    if payload.dosar_id is not None:
+        dosar = db.query(Dosar).filter(Dosar.id == payload.dosar_id).first()
+        if not dosar:
+            raise HTTPException(status_code=400, detail="Invalid dosar_id")
+        if payload.dosar_id != doc.dosar_id:
+            changes["dosar_id"] = {
+                "from": serialize_audit_value(doc.dosar_id),
+                "to": serialize_audit_value(payload.dosar_id),
+            }
+            doc.dosar_id = payload.dosar_id
+
+    if payload.confirmed:
+        if not doc.nomenclator_confirmed:
+            changes["nomenclator_confirmed"] = {
+                "from": serialize_audit_value(doc.nomenclator_confirmed),
+                "to": True,
+            }
+            doc.nomenclator_confirmed = True
+            doc.nomenclator_confirmed_at = datetime.utcnow()
+            changes["nomenclator_confirmed_at"] = {
+                "from": None,
+                "to": serialize_audit_value(doc.nomenclator_confirmed_at),
+            }
+    else:
+        if doc.nomenclator_confirmed:
+            previous_confirmed_at = doc.nomenclator_confirmed_at
+            changes["nomenclator_confirmed"] = {
+                "from": True,
+                "to": False,
+            }
+            doc.nomenclator_confirmed = False
+            doc.nomenclator_confirmed_at = None
+            changes["nomenclator_confirmed_at"] = {
+                "from": serialize_audit_value(previous_confirmed_at),
+                "to": None,
+            }
+
+    if not changes:
         return JSONResponse({
-            "status": "success",
+            "status": "no_changes",
             "document_id": document_id,
-            "message": "Nomenclator confirmation recorded (Sprint 3 persistence pending)",
-            "warning": "Database schema not yet migrated for this feature"
         })
+
+    db.commit()
+    db.refresh(doc)
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action=AuditActionEnum.APPROVE,
+        resource_type="document",
+        resource_id=doc.id,
+        document_id=doc.id,
+        description="Nomenclator/dosar confirmation",
+        changes=changes,
+        ip_address=get_request_ip(request),
+    )
+
+    return JSONResponse({
+        "status": "success",
+        "document_id": document_id,
+        "nomenclator_id": doc.nomenclator_id,
+        "dosar_id": doc.dosar_id,
+        "confirmed": doc.nomenclator_confirmed,
+        "confirmed_at": doc.nomenclator_confirmed_at.isoformat() if doc.nomenclator_confirmed_at else None,
+    })
+
+
+@router.post("/{document_id}/request-manual-correction")
+async def request_manual_correction(
+    document_id: int,
+    payload: DocumentCorrectionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
+    """Request manual correction during review."""
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.status != DocumentStatusEnum.REVIEW:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only request correction during REVIEW. Current status: {doc.status.value}",
+        )
+
+    previous_status = doc.status
+    doc.status = DocumentStatusEnum.RETURNED
+    db.commit()
+    db.refresh(doc)
+
+    changes = {
+        "status": {
+            "from": serialize_audit_value(previous_status),
+            "to": serialize_audit_value(doc.status),
+        }
+    }
+    if payload.reason:
+        changes["reason"] = {"from": None, "to": payload.reason}
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action=AuditActionEnum.UPDATE,
+        resource_type="document",
+        resource_id=doc.id,
+        document_id=doc.id,
+        description="Manual correction requested",
+        changes=changes,
+        ip_address=get_request_ip(request),
+    )
+
+    return JSONResponse({
+        "status": "success",
+        "document_id": doc.id,
+        "new_status": doc.status.value,
+        "reason": payload.reason,
+    })
+
+
+@router.post("/{document_id}/approve")
+async def approve_document(
+    document_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
+    """Approve a reviewed document."""
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.status != DocumentStatusEnum.REVIEW:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only approve during REVIEW. Current status: {doc.status.value}",
+        )
+
+    previous_status = doc.status
+    previous_archived_at = doc.archived_at
+    doc.status = DocumentStatusEnum.APPROVED
+    if not doc.archived_at:
+        doc.archived_at = datetime.utcnow()
+    db.commit()
+    db.refresh(doc)
+
+    changes = {
+        "status": {
+            "from": serialize_audit_value(previous_status),
+            "to": serialize_audit_value(doc.status),
+        }
+    }
+    if previous_archived_at != doc.archived_at:
+        changes["archived_at"] = {
+            "from": serialize_audit_value(previous_archived_at),
+            "to": serialize_audit_value(doc.archived_at),
+        }
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action=AuditActionEnum.APPROVE,
+        resource_type="document",
+        resource_id=doc.id,
+        document_id=doc.id,
+        description="Document approved",
+        changes=changes,
+        ip_address=get_request_ip(request),
+    )
+
+    return JSONResponse({
+        "status": "success",
+        "document_id": doc.id,
+        "new_status": doc.status.value,
+        "approved_at": doc.archived_at.isoformat() if doc.archived_at else None,
+    })
+
+
+@router.post("/{document_id}/return")
+async def return_document(
+    document_id: int,
+    payload: DocumentCorrectionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
+    """Return a reviewed document."""
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.status != DocumentStatusEnum.REVIEW:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only return during REVIEW. Current status: {doc.status.value}",
+        )
+
+    previous_status = doc.status
+    doc.status = DocumentStatusEnum.RETURNED
+    db.commit()
+    db.refresh(doc)
+
+    changes = {
+        "status": {
+            "from": serialize_audit_value(previous_status),
+            "to": serialize_audit_value(doc.status),
+        }
+    }
+    if payload.reason:
+        changes["reason"] = {"from": None, "to": payload.reason}
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action=AuditActionEnum.UPDATE,
+        resource_type="document",
+        resource_id=doc.id,
+        document_id=doc.id,
+        description="Document returned",
+        changes=changes,
+        ip_address=get_request_ip(request),
+    )
+
+    return JSONResponse({
+        "status": "success",
+        "document_id": doc.id,
+        "new_status": doc.status.value,
+        "reason": payload.reason,
+    })
 
 
 def _get_extension(path: str) -> str:

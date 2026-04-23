@@ -49,11 +49,15 @@ class DocumentStatusEnum(str, Enum):
     PENDING = "pending"
     UPLOADED = "uploaded"
     PROCESSING = "processing"
+    REVIEW = "review"
+    APPROVED = "approved"
+    RETURNED = "returned"
     CLASSIFIED = "classified"
     EXTRACTED = "extracted"
     VALIDATED = "validated"
     ARCHIVED = "archived"
     REJECTED = "rejected"
+    ERROR = "error"
 
 class DocumentCreate(BaseModel):
     document_number: str
@@ -75,6 +79,16 @@ class DocumentUpdateRequest(BaseModel):
     currency: Optional[str] = Field(None, min_length=1, max_length=3)
     document_date: Optional[datetime] = None
     document_type: Optional[DocumentTypeEnum] = None
+
+
+class NomenclatorConfirmationRequest(BaseModel):
+    confirmed: bool = True
+    nomenclator_id: Optional[int] = None
+    dosar_id: Optional[int] = None
+
+
+class DocumentCorrectionRequest(BaseModel):
+    reason: Optional[str] = None
 
 class DocumentResponse(BaseModel):
     id: int

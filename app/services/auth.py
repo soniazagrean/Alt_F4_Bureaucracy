@@ -16,6 +16,8 @@ from app.models.user import RoleEnum, User
 class AuthService:
     def __init__(self):
         self._redis = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        # Fallback store used when Redis is unavailable.
+        self._fallback_store: Dict[str, str] = {}
 
     def register_user(
         self,
@@ -98,6 +100,7 @@ class AuthService:
             "username": user.username,
             "role": user.role.value if hasattr(user.role, "value") else str(user.role),
             "typ": "access",
+            "jti": str(uuid4()),
             "iat": int(now.timestamp()),
             "exp": int(access_exp.timestamp()),
         }
@@ -115,7 +118,7 @@ class AuthService:
         refresh_token = jwt.encode(refresh_payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
         ttl_seconds = int((refresh_exp - now).total_seconds())
-        self._redis.setex(self._refresh_key(refresh_jti), ttl_seconds, str(user.id))
+        self._set_token_key(self._refresh_key(refresh_jti), ttl_seconds, str(user.id))
 
         return {
             "access_token": access_token,
@@ -128,15 +131,20 @@ class AuthService:
         payload = self._decode_token(refresh_token, expected_type="refresh")
         jti = payload.get("jti")
         user_id = payload.get("sub")
+        exp = payload.get("exp")
 
         if not jti or not user_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
         key = self._refresh_key(jti)
-        if not self._redis.exists(key):
+        if self._token_is_blacklisted(jti):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or expired")
 
-        self._redis.delete(key)
+        if not self._exists_token_key(key):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or expired")
+
+        self._delete_token_key(key)
+        self._blacklist_refresh_token_jti(jti, exp)
 
         user = db.query(User).filter(User.id == int(user_id)).first()
         if not user:
@@ -150,8 +158,10 @@ class AuthService:
     def revoke_refresh_token(self, refresh_token: str) -> None:
         payload = self._decode_token(refresh_token, expected_type="refresh")
         jti = payload.get("jti")
+        exp = payload.get("exp")
         if jti:
-            self._redis.delete(self._refresh_key(jti))
+            self._delete_token_key(self._refresh_key(jti))
+            self._blacklist_refresh_token_jti(jti, exp)
 
     def get_current_user_from_access_token(self, db: Session, token: str) -> User:
         payload = self._decode_token(token, expected_type="access")
@@ -182,9 +192,48 @@ class AuthService:
 
         return payload
 
+    def _set_token_key(self, key: str, ttl_seconds: int, value: str) -> None:
+        ttl = max(int(ttl_seconds), 1)
+        try:
+            self._redis.setex(key, ttl, value)
+        except Exception:
+            self._fallback_store[key] = value
+
+    def _exists_token_key(self, key: str) -> bool:
+        try:
+            return bool(self._redis.exists(key))
+        except Exception:
+            return key in self._fallback_store
+
+    def _delete_token_key(self, key: str) -> None:
+        try:
+            self._redis.delete(key)
+        except Exception:
+            pass
+        self._fallback_store.pop(key, None)
+
+    def _blacklist_refresh_token_jti(self, jti: str, exp_epoch: Optional[int]) -> None:
+        ttl_seconds = self._ttl_from_exp(exp_epoch)
+        self._set_token_key(self._refresh_blacklist_key(jti), ttl_seconds, "1")
+
+    def _token_is_blacklisted(self, jti: str) -> bool:
+        return self._exists_token_key(self._refresh_blacklist_key(jti))
+
+    @staticmethod
+    def _ttl_from_exp(exp_epoch: Optional[int]) -> int:
+        if not exp_epoch:
+            return 60
+
+        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        return max(exp_epoch - now_epoch, 1)
+
     @staticmethod
     def _refresh_key(jti: str) -> str:
         return f"auth:refresh:{jti}"
+
+    @staticmethod
+    def _refresh_blacklist_key(jti: str) -> str:
+        return f"auth:refresh:blacklist:{jti}"
 
     @staticmethod
     def _resync_user_id_sequence(db: Session) -> None:

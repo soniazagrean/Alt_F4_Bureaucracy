@@ -1,6 +1,7 @@
 from minio import Minio
 from app.config import settings
 import io
+import re
 
 class StorageService:
     def __init__(self):
@@ -26,6 +27,22 @@ class StorageService:
                 print(f"Storage: Bucket '{bucket_name}' created.")
             else:
                 print(f"Storage: Bucket '{bucket_name}' already exists.")
+
+    def get_presigned_url(self, bucket_name: str, object_name: str, expires_minutes: int = 15):
+        """
+        Generate presigned URL that works from browser (replaces docker hostname with localhost)
+        """
+        from datetime import timedelta
+        url = self.client.presigned_get_object(
+            bucket_name,
+            object_name,
+            expires=timedelta(minutes=expires_minutes),
+        )
+        # Replace docker hostname with localhost for browser access
+        # Handle both http://minio:9000 and minio:9000 formats
+        url = url.replace("http://minio:9000", "http://localhost:9000")
+        url = url.replace("minio:9000", "http://localhost:9000")
+        return url
 
     def upload_file(self, file_data: bytes, file_name: str, bucket_key: str = "uploads", content_type: str = "application/octet-stream"):
         """

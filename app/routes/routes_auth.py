@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.dependencies.security import get_current_user_context
 from app.db.database import get_db
 from app.schemas_auth import (
     LoginRequest,
@@ -14,7 +14,6 @@ from app.schemas_auth import (
 from app.services.auth import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
-security = HTTPBearer(auto_error=True)
 
 @router.post("/register")
 async def register(payload: RegisterRequest, db: Session = Depends(get_db)):
@@ -50,8 +49,16 @@ async def logout(payload: LogoutRequest):
 
 @router.get("/me", response_model=UserMeResponse)
 async def me(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
+    context=Depends(get_current_user_context),
 ):
-    user = auth_service.get_current_user_from_access_token(db, credentials.credentials)
-    return user
+    user = context.user
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "rbac_role": context.rbac_role.value,
+        "is_active": user.is_active,
+        "created_at": user.created_at,
+    }

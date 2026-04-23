@@ -36,7 +36,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 60s
     networks:
       - alt-network
 
@@ -184,6 +184,8 @@ services:
       MEILI_HOST: meilisearch
       MEILISEARCH_PORT: 7700
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-super_secret_key}
+      
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
     depends_on:
       - redis
       - postgres

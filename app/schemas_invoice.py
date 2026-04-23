@@ -28,6 +28,7 @@ class InvoiceData(BaseModel):
     items: List[InvoiceItem] = Field(..., min_items=1, description="List of invoice line items")
     total: Decimal = Field(..., ge=0, description="Total invoice amount (including VAT)")
     TVA: Decimal = Field(..., ge=0, description="VAT/Tax amount")
+    currency: Optional[str] = Field(default="EUR", description="Currency code (EUR, RON, USD, etc)")
     
     # Optional fields for additional context
     numar_ordine: Optional[str] = Field(None, description="PO/Order number")
@@ -48,6 +49,23 @@ class InvoiceData(BaseModel):
                     continue
             raise ValueError(f'Invalid date format: {v}')
         raise ValueError(f'Cannot parse date from {type(v)}')
+    
+    @validator('termen_plata', pre=True)
+    def parse_termen_plata(cls, v):
+        """Parse payment deadline from various formats."""
+        if v is None:
+            return v
+        if isinstance(v, datetime):
+            return v
+        if isinstance(v, str):
+            # Try common date formats
+            for fmt in ['%d.%m.%Y', '%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d']:
+                try:
+                    return datetime.strptime(v, fmt)
+                except ValueError:
+                    continue
+            raise ValueError(f'Invalid date format for termen_plata: {v}')
+        raise ValueError(f'Cannot parse termen_plata from {type(v)}')
     
     @validator('TVA', pre=True)
     def validate_tva(cls, v, values):

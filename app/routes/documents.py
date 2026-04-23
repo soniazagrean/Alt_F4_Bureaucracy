@@ -17,7 +17,7 @@ from app.schemas import DocumentUploadResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(prefix="/documents", tags=["Documents"])
 
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
@@ -25,60 +25,93 @@ async def upload_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
-    # 1. Read file content
-    contents = await file.read()
-    
-    # 2. Calculate SHA-256 Hash
-    file_hash = hashlib.sha256(contents).hexdigest()
-    
-    # 3. Deduplication Check
-    existing_doc = db.query(Document).filter(Document.file_hash == file_hash).first()
-    if existing_doc:
-        return DocumentUploadResponse(
-            id=existing_doc.id,
-            filename=existing_doc.title,
-            status=existing_doc.status.value,
-            message="File already exists (duplicate detected).",
-            is_duplicate=True
-        )
-    
-    # 4. Upload to MinIO
     try:
-        # Use the existing 'storage' instance and method
-        storage_path = storage.upload_file(
-            file_data=contents, 
-            file_name=file.filename, 
-            bucket_key="uploads", # Matches your MINIO_BUCKET_UPLOADS
-            content_type=file.content_type
+        logger.info(f"📤 Starting upload for file: {file.filename}")
+        
+        # 1. Read file content
+        contents = await file.read()
+        logger.info(f"✓ File read: {len(contents)} bytes")
+        
+        # 2. Calculate SHA-256 Hash
+        file_hash = hashlib.sha256(contents).hexdigest()
+        logger.info(f"✓ Hash calculated: {file_hash}")
+        
+        # 3. Deduplication Check
+        existing_doc = db.query(Document).filter(Document.file_hash == file_hash).first()
+        if existing_doc:
+            logger.warning(f"⚠️  Duplicate file detected: {file_hash}")
+            return DocumentUploadResponse(
+                id=existing_doc.id,
+                filename=existing_doc.title,
+                status=existing_doc.status.value,
+                message="File already exists (duplicate detected).",
+                is_duplicate=True
+            )
+        
+        # 4. Upload to MinIO
+        logger.info(f"📦 Uploading to MinIO...")
+        try:
+            # Use the existing 'storage' instance and method
+            storage_path = storage.upload_file(
+                file_data=contents, 
+                file_name=file.filename, 
+                bucket_key="uploads", # Matches your MINIO_BUCKET_UPLOADS
+                content_type=file.content_type
+            )
+            logger.info(f"✓ MinIO upload successful: {storage_path}")
+        except Exception as e:
+            logger.error(f"❌ MinIO upload error: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Storage error: {str(e)}")
+    
+        # 5. Create Database Record
+        logger.info(f"💾 Creating database record...")
+        # Note: Using temp values for required fields that are not yet known
+        new_doc = Document(
+            document_number=f"temp-{uuid.uuid4()}",  # Temporary unique number
+            title=file.filename,                     # Use filename as initial title
+            document_type=DocumentTypeEnum.OTHER.value,    # Default type
+            file_path=storage_path,
+            file_size=len(contents),
+            mime_type=file.content_type,
+            file_hash=file_hash,
+            status=DocumentStatusEnum.PENDING,
+            created_by_id=current_user.id
         )
+        
+        db.add(new_doc)
+        db.commit()
+        db.refresh(new_doc)
+        logger.info(f"✓ Document record created: ID={new_doc.id}")
+        
+        # Launch Celery task for document processing
+        logger.info(f"🚀 Launching Celery task...")
+        document_id = new_doc.id
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+        
+        from app.celery_app import process_document_task
+        try:
+            task = process_document_task.delay(document_id)
+            logger.info(f"✓ Celery task launched: task_id={task.id}")
+        except Exception as e:
+            logger.error(f"❌ Celery task launch error: {str(e)}", exc_info=True)
+            # Don't fail upload if Celery fails, but log it
+        
+        logger.info(f"✓ Upload complete for document ID={new_doc.id}")
+        return DocumentUploadResponse(
+            id=new_doc.id,
+            filename=new_doc.title,
+            status=new_doc.status.value,
+            message="File uploaded successfully. Processing started.",
+            is_duplicate=False
+        )
+    
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Storage error: {str(e)}")
-    
-    # 5. Create Database Record
-    # Note: Using temp values for required fields that are not yet known
-    new_doc = Document(
-        document_number=f"temp-{uuid.uuid4()}",  # Temporary unique number
-        title=file.filename,                     # Use filename as initial title
-        document_type=DocumentTypeEnum.OTHER.value,    # Default type
-        file_path=storage_path,
-        file_size=len(contents),
-        mime_type=file.content_type,
-        file_hash=file_hash,
-        status=DocumentStatusEnum.PENDING,
-        created_by_id=current_user.id
-    )
-    
-    db.add(new_doc)
-    db.commit()
-    db.refresh(new_doc)
-    
-    return DocumentUploadResponse(
-        id=new_doc.id,
-        filename=new_doc.title,
-        status=new_doc.status.value,
-        message="File uploaded successfully.",
-        is_duplicate=False
-    )
+        logger.error(f"❌ Unexpected error in upload_document: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @router.post("/upload-pdf")
 async def upload_pdf(

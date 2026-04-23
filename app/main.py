@@ -95,3 +95,7 @@ app.include_router(documents.router, tags = ["Documents"])
 # Include document detail CRUD router
 from app.routes.routes_documents import router as documents_detail_router
 app.include_router(documents_detail_router)
+
+# Include archive router
+from app.routes.routes_archive import router as archive_router
+app.include_router(archive_router)

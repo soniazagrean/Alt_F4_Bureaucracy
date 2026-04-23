@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import Field
 from sqlalchemy.orm import Session
@@ -9,9 +9,12 @@ from sqlalchemy import or_
 
 from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
+from app.models.audit import AuditActionEnum
 from app.models.archive import Dosar, NomenclatorEntry
 from app.models.document import Document
+from app.models.user import User
 from app.schemas import DosarCreate
+from app.services.audit_service import get_request_ip, log_audit_event, serialize_audit_value
 
 router = APIRouter(prefix="/archive", tags=["Archive"])
 
@@ -68,8 +71,9 @@ async def list_archived(
 @router.post("/")
 async def archive_document(
     payload: ArchiveCreateRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
     existing = db.query(Dosar).filter(Dosar.dosar_number == payload.dosar_number).first()
     if existing:
@@ -107,12 +111,32 @@ async def archive_document(
     db.refresh(dosar)
 
     linked_document_ids: list[int] = []
+    previous_dosar_ids: dict[int, int | None] = {}
     if documents:
+        previous_dosar_ids = {document.id: document.dosar_id for document in documents}
         for document in documents:
             document.dosar_id = dosar.id
             linked_document_ids.append(document.id)
         db.commit()
         db.refresh(dosar)
+
+        for document in documents:
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action=AuditActionEnum.ARCHIVE,
+                resource_type="document",
+                resource_id=document.id,
+                document_id=document.id,
+                description="Document linked to archive dosar",
+                changes={
+                    "dosar_id": {
+                        "from": serialize_audit_value(previous_dosar_ids.get(document.id)),
+                        "to": serialize_audit_value(dosar.id),
+                    }
+                },
+                ip_address=get_request_ip(request),
+            )
 
     return JSONResponse(
         {

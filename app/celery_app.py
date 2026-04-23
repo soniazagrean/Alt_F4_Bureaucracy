@@ -483,10 +483,44 @@ def process_document_task(self, document_id: int):
             classifier = DocumentClassificationService()
             classification, classification_errors = classifier.classify(first_local.name)
             if classification:
+                previous_type = doc.document_type
+                previous_confidence = doc.confidence
                 doc.document_type = classification.tip_document.value
                 doc.confidence = classification.confidence
                 doc.status = DocumentStatusEnum.EXTRACTED
                 db.commit()
+
+                try:
+                    from app.models.audit import AuditActionEnum
+                    from app.services.audit_service import (
+                        get_or_create_system_user,
+                        log_audit_event,
+                        serialize_audit_value,
+                    )
+
+                    system_user = get_or_create_system_user(db)
+                    log_audit_event(
+                        db=db,
+                        user=system_user,
+                        action=AuditActionEnum.CLASSIFY,
+                        resource_type="document",
+                        resource_id=doc.id,
+                        document_id=doc.id,
+                        description="Document classified by pipeline",
+                        changes={
+                            "document_type": {
+                                "from": serialize_audit_value(previous_type),
+                                "to": serialize_audit_value(doc.document_type),
+                            },
+                            "confidence": {
+                                "from": serialize_audit_value(previous_confidence),
+                                "to": serialize_audit_value(doc.confidence),
+                            },
+                        },
+                        ip_address=None,
+                    )
+                except Exception as audit_exc:
+                    logger.warning("Failed to write classification audit log: %s", audit_exc)
 
         # Extract invoice data
         extractor = InvoiceExtractionService()
@@ -535,6 +569,7 @@ def process_document_task(self, document_id: int):
         )
 
         suggestion_result = nomenclator_service.suggest_nomenclator(request_body, num_suggestions=3)
+        previous_status = doc.status
         if suggestion_result.success and suggestion_result.primary_suggestion:
             doc.status = DocumentStatusEnum.ARCHIVED
             doc.archived_at = datetime.now()
@@ -545,6 +580,38 @@ def process_document_task(self, document_id: int):
 
         # Final commit
         db.commit()
+
+        try:
+            from app.models.audit import AuditActionEnum
+            from app.services.audit_service import (
+                get_or_create_system_user,
+                log_audit_event,
+                serialize_audit_value,
+            )
+
+            system_user = get_or_create_system_user(db)
+            log_audit_event(
+                db=db,
+                user=system_user,
+                action=AuditActionEnum.ARCHIVE,
+                resource_type="document",
+                resource_id=doc.id,
+                document_id=doc.id,
+                description="Document archived by pipeline",
+                changes={
+                    "status": {
+                        "from": serialize_audit_value(previous_status),
+                        "to": serialize_audit_value(doc.status),
+                    },
+                    "archived_at": {
+                        "from": None,
+                        "to": serialize_audit_value(doc.archived_at),
+                    },
+                },
+                ip_address=None,
+            )
+        except Exception as audit_exc:
+            logger.warning("Failed to write archive audit log: %s", audit_exc)
 
         try:
             from app.services.graph_service import populate_graph_for_document

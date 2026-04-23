@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from enum import Enum
 
 # User Schemas
@@ -65,6 +65,16 @@ class DocumentCreate(BaseModel):
     file_path: str
     dosar_id: Optional[int] = None
     nomenclator_id: Optional[int] = None
+
+
+class DocumentUpdateRequest(BaseModel):
+    document_number: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = Field(None, min_length=1, max_length=3)
+    document_date: Optional[datetime] = None
+    document_type: Optional[DocumentTypeEnum] = None
 
 class DocumentResponse(BaseModel):
     id: int
@@ -131,6 +141,7 @@ class DosarResponse(BaseModel):
 class AuditActionEnum(str, Enum):
     CREATE = "create"
     READ = "read"
+    INSPECT = "inspect"
     UPDATE = "update"
     DELETE = "delete"
     DOWNLOAD = "download"
@@ -138,6 +149,12 @@ class AuditActionEnum(str, Enum):
     CLASSIFY = "classify"
     EXTRACT = "extract"
     ARCHIVE = "archive"
+    RESTORE = "restore"
+    APPROVE = "approve"
+    MANUAL_EDIT = "manual_edit"
+    LOGIN = "login"
+    LOGOUT = "logout"
+    PERMISSION_CHANGE = "permission_change"
 
 class AuditLogResponse(BaseModel):
     id: int
@@ -149,6 +166,32 @@ class AuditLogResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class AuditActorResponse(BaseModel):
+    id: int
+    username: str
+    full_name: Optional[str] = None
+    role: RoleEnum
+
+    class Config:
+        from_attributes = True
+
+
+class AuditTrailEntryResponse(BaseModel):
+    id: int
+    actor: AuditActorResponse
+    action: AuditActionEnum
+    timestamp: datetime
+    details: Optional[str] = None
+    changes: Optional[Dict[str, Any]] = None
+    ip_address: Optional[str] = None
+
+
+class AuditTrailResponse(BaseModel):
+    document_id: int
+    items: List[AuditTrailEntryResponse]
+    total: int
 
 # Alert Schemas
 class AnomalyTypeEnum(str, Enum):

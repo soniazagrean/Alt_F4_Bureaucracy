@@ -4,14 +4,16 @@ import uuid
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
+from app.models.audit import AuditActionEnum
 from app.models.document import Document, DocumentStatusEnum, DocumentTypeEnum
 from app.models.user import User
+from app.services.audit_service import log_audit_event, get_request_ip
 from app.services.storage import storage
 from app.schemas import DocumentUploadResponse
 
@@ -21,6 +23,7 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
@@ -82,6 +85,22 @@ async def upload_document(
         db.commit()
         db.refresh(new_doc)
         logger.info(f"✓ Document record created: ID={new_doc.id}")
+
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action=AuditActionEnum.UPLOAD,
+            resource_type="document",
+            resource_id=new_doc.id,
+            document_id=new_doc.id,
+            description="Document uploaded",
+            changes={
+                "file_name": new_doc.title,
+                "file_size": new_doc.file_size,
+                "mime_type": new_doc.mime_type,
+            },
+            ip_address=get_request_ip(request),
+        )
         
         # Launch Celery task for document processing
         logger.info(f"🚀 Launching Celery task...")
@@ -115,6 +134,7 @@ async def upload_document(
 
 @router.post("/upload-pdf")
 async def upload_pdf(
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
@@ -158,6 +178,22 @@ async def upload_pdf(
         db.add(new_doc)
         db.commit()
         db.refresh(new_doc)
+
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action=AuditActionEnum.UPLOAD,
+            resource_type="document",
+            resource_id=new_doc.id,
+            document_id=new_doc.id,
+            description="Document uploaded",
+            changes={
+                "file_name": new_doc.title,
+                "file_size": new_doc.file_size,
+                "mime_type": new_doc.mime_type,
+            },
+            ip_address=get_request_ip(request),
+        )
 
         document_id = new_doc.id
         

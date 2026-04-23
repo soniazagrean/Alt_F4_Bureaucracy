@@ -235,6 +235,7 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      FASTAPI_BASE_URL: http://fastapi:8000
     ports:
       - "${STREAMLIT_PORT:-8501}:8501"
     depends_on:

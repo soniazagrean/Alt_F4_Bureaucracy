@@ -8,6 +8,7 @@ Features:
 - Document details display
 """
 
+import os
 import streamlit as st
 import requests
 import time
@@ -21,7 +22,7 @@ st.title("Upload Document")
 st.markdown("Upload PDF documents for processing and monitor their status in real-time.")
 
 # Configuration
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://localhost:8000")
 POLLING_INTERVAL = 3  # seconds
 MAX_POLLING_TIME = 300  # 5 minutes
 

@@ -87,5 +87,17 @@ class StorageService:
         )
         return f"{bucket_name}/{object_name}"
 
+    def download_file(self, object_path: str, file_path: str) -> None:
+        """Downloads a MinIO object (bucket/object) to a local path."""
+        bucket_name, object_name = object_path.split("/", 1)
+        response = self.client.get_object(bucket_name, object_name)
+        try:
+            with open(file_path, "wb") as handle:
+                for chunk in response.stream(amt=1024 * 1024):
+                    handle.write(chunk)
+        finally:
+            response.close()
+            response.release_conn()
+
 # Create a single instance to reuse
 storage = StorageService()

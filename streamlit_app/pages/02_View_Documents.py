@@ -149,6 +149,14 @@ def _filter_documents(documents: list[dict], year: str, supplier: str, doc_type:
         filtered.append(doc)
     return filtered
 
+
+def _format_relation_label(relation_type: str) -> str:
+    labels = {
+        "same_dosar": "Același dosar",
+        "same_furnizor": "Același furnizor",
+    }
+    return labels.get(relation_type, relation_type.replace("_", " ").title())
+
 # ============================================================================
 # SIDEBAR - Authentication & Filters
 # ============================================================================
@@ -676,7 +684,132 @@ if st.session_state.auth_token:
                             st.info("Nu sunt disponibile sugestii de nomenclator încă")
                     
                     st.divider()
-                
+
+                # =========================================================================
+                # RELATED DOCUMENTS (Neo4j)
+                # =========================================================================
+
+                st.markdown("### Documente înrudite")
+                related_filters = st.columns([2, 1, 1])
+
+                with related_filters[0]:
+                    relation_filter = st.selectbox(
+                        "Tip relație",
+                        ["Toate", "Același dosar", "Același furnizor"],
+                        key=f"related_filter_{doc_id}",
+                    )
+
+                with related_filters[1]:
+                    related_page_size = st.selectbox(
+                        "Rezultate/pagină",
+                        [5, 10, 20],
+                        index=1,
+                        key=f"related_page_size_{doc_id}",
+                    )
+
+                with related_filters[2]:
+                    related_page = st.number_input(
+                        "Pagina",
+                        min_value=1,
+                        value=1,
+                        step=1,
+                        key=f"related_page_{doc_id}",
+                    )
+
+                relation_type_map = {
+                    "Toate": None,
+                    "Același dosar": "same_dosar",
+                    "Același furnizor": "same_furnizor",
+                }
+                relation_type = relation_type_map.get(relation_filter)
+
+                try:
+                    with st.spinner("Se încarcă documentele înrudite..."):
+                        related_params = {
+                            "page": int(related_page),
+                            "page_size": int(related_page_size),
+                        }
+                        if relation_type:
+                            related_params["relation_type"] = relation_type
+
+                        related_response = requests.get(
+                            f"{API_BASE_URL}/documents/{doc_id}/related",
+                            headers=headers,
+                            params=related_params,
+                            timeout=10,
+                        )
+
+                    if related_response.status_code == 200:
+                        related_payload = related_response.json()
+                        related_items = related_payload.get("related", [])
+                        total_related = related_payload.get("total_count", 0)
+                        total_pages = related_payload.get("total_pages", 0)
+
+                        st.caption(
+                            f"Total: {total_related} · Pagina {related_payload.get('page', 1)} din {total_pages or 1}"
+                        )
+
+                        if not related_items:
+                            st.info("Nu există documente înrudite pentru criteriul selectat.")
+                        else:
+                            for related_doc in related_items:
+                                with st.container(border=True):
+                                    left_col, right_col = st.columns([3, 1])
+
+                                    with left_col:
+                                        doc_label = related_doc.get("nr_factura") or f"Document #{related_doc.get('id')}"
+                                        st.markdown(f"**{doc_label}**")
+
+                                        meta_bits = []
+                                        if related_doc.get("tip_document"):
+                                            meta_bits.append(str(related_doc.get("tip_document")).upper())
+                                        if related_doc.get("data"):
+                                            meta_bits.append(str(related_doc.get("data")))
+                                        if related_doc.get("total") is not None:
+                                            meta_bits.append(f"Total: {related_doc.get('total')}")
+                                        if related_doc.get("status"):
+                                            meta_bits.append(str(related_doc.get("status")).upper())
+                                        if meta_bits:
+                                            st.caption(" · ".join(meta_bits))
+
+                                        if related_doc.get("furnizor"):
+                                            st.markdown(
+                                                f"<span class='meta-chip'>Furnizor: {related_doc.get('furnizor')}</span>",
+                                                unsafe_allow_html=True,
+                                            )
+                                        if related_doc.get("dosar"):
+                                            st.markdown(
+                                                f"<span class='meta-chip'>Dosar: {related_doc.get('dosar')}</span>",
+                                                unsafe_allow_html=True,
+                                            )
+
+                                        relation_types = related_doc.get("relation_types") or []
+                                        if relation_types:
+                                            relation_badges = " ".join(
+                                                f"<span class='meta-chip'>{_format_relation_label(rel)}</span>"
+                                                for rel in relation_types
+                                            )
+                                            st.markdown(relation_badges, unsafe_allow_html=True)
+
+                                    with right_col:
+                                        if st.button(
+                                            "Open details",
+                                            key=f"related_open_{doc_id}_{related_doc.get('id')}",
+                                            use_container_width=True,
+                                        ):
+                                            st.session_state.selected_doc_id = str(related_doc.get("id"))
+                                            st.rerun()
+                    elif related_response.status_code == 503:
+                        st.warning("Neo4j este indisponibil momentan. Încearcă mai târziu.")
+                    else:
+                        st.warning(
+                            f"Nu s-au putut încărca documentele înrudite: {related_response.status_code}"
+                        )
+                except requests.exceptions.ConnectionError:
+                    st.warning("Nu se poate comunica cu serviciul Neo4j momentan.")
+                except Exception as e:
+                    st.warning(f"Eroare la încărcarea documentelor înrudite: {str(e)}")
+
                 # Timeline
                 st.markdown("### Processing Timeline")
 
@@ -744,7 +877,7 @@ if st.session_state.auth_token:
         search_tab, archive_tab = st.tabs(["Document Search", "Archive Browser"])
 
         with search_tab:
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
             with col1:
                 search_query = st.text_input(
                     "Search",
@@ -758,6 +891,12 @@ if st.session_state.auth_token:
                     help="Filter by document type"
                 )
             with col3:
+                supplier_query = st.text_input(
+                    "Furnizor",
+                    placeholder="Nume furnizor",
+                    help="Filtrare după numele furnizorului (potrivit exact)"
+                )
+            with col4:
                 doc_status = st.selectbox(
                     "Status",
                     [
@@ -787,6 +926,8 @@ if st.session_state.auth_token:
                 search_params["q"] = search_query
             if doc_type != "All":
                 search_params["tip_document"] = doc_type.lower()
+            if supplier_query:
+                search_params["furnizor"] = supplier_query
             if doc_status != "All":
                 search_params["status"] = doc_status.lower()
             if year != "All":
@@ -857,6 +998,16 @@ if st.session_state.auth_token:
                                 ):
                                     st.session_state.selected_doc_id = str(doc_id)
                                     st.rerun()
+                                detail_bits = []
+                                doc_number = doc.get("nr_factura") or doc.get("document_number")
+                                if doc_number:
+                                    detail_bits.append(f"Nr: {doc_number}")
+                                if doc.get("furnizor"):
+                                    detail_bits.append(f"Furnizor: {doc.get('furnizor')}")
+                                if doc.get("data"):
+                                    detail_bits.append(str(doc.get("data")))
+                                if detail_bits:
+                                    st.caption(" · ".join(detail_bits))
                             with col2:
                                 st.write(f"{status_emoji.get(status_upper, '❓')} **{status_upper}**")
                             with col3:

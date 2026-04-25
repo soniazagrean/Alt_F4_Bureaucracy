@@ -27,7 +27,8 @@ class SearchService:
                 'tip_document',
                 'status',
                 'data',
-                'cod_nomenclator'
+                'cod_nomenclator',
+                'furnizor'
             ])
             
             # Define sortable attributes

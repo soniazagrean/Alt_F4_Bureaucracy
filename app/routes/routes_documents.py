@@ -48,6 +48,7 @@ async def search_documents(
     tip_document: Optional[str] = Query(None, description="Filter by document type (invoice, contract, report, etc.)"),
     data_start: Optional[str] = Query(None, description="Filter documents from date (ISO format: YYYY-MM-DD)"),
     data_end: Optional[str] = Query(None, description="Filter documents until date (ISO format: YYYY-MM-DD)"),
+    furnizor: Optional[str] = Query(None, description="Filter by supplier/vendor name"),
     status: Optional[str] = Query(None, description="Filter by status (pending, archived, error, etc.)"),
     limit: int = Query(20, ge=1, le=100, description="Number of results to return"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
@@ -63,6 +64,7 @@ async def search_documents(
     - q: Full-text search query
     - tip_document: Filter by document type
     - data_start / data_end: Date range filtering
+    - furnizor: Filter by supplier/vendor
     - status: Filter by processing status
     - limit: Results per page (max 100)
     - offset: Pagination offset
@@ -83,6 +85,10 @@ async def search_documents(
         
         if status and status != "All":
             filters.append(f'status = "{status.lower()}"')
+
+        if furnizor:
+            safe_furnizor = furnizor.replace('"', '\\"')
+            filters.append(f'furnizor = "{safe_furnizor}"')
         
         # Date range filtering
         if data_start or data_end:
@@ -130,6 +136,7 @@ async def search_documents(
                 "status": status,
                 "data_start": data_start,
                 "data_end": data_end,
+                "furnizor": furnizor,
             },
             "hits": hits,
             "total_hits": total_hits,
@@ -144,15 +151,36 @@ async def search_documents(
         # Fallback to PostgreSQL full-text search
         try:
             query = db.query(Document)
+
+            join_extracted = bool(q or furnizor)
+            if join_extracted:
+                query = query.outerjoin(
+                    ExtractedData,
+                    and_(
+                        ExtractedData.document_id == Document.id,
+                        ExtractedData.field_name.ilike("furnizor"),
+                    ),
+                )
             
             # Full-text search
             if q:
                 search_term = f"%{q}%"
+                text_filters = [
+                    Document.title.ilike(search_term),
+                    Document.description.ilike(search_term),
+                    Document.document_number.ilike(search_term),
+                ]
+                if join_extracted:
+                    text_filters.append(ExtractedData.field_value.ilike(search_term))
+                query = query.filter(or_(*text_filters))
+
+            if furnizor:
+                supplier_term = f"%{furnizor}%"
                 query = query.filter(
                     or_(
-                        Document.title.ilike(search_term),
-                        Document.description.ilike(search_term),
-                        Document.document_number.ilike(search_term),
+                        ExtractedData.field_value.ilike(supplier_term),
+                        Document.title.ilike(supplier_term),
+                        Document.description.ilike(supplier_term),
                     )
                 )
             
@@ -183,6 +211,9 @@ async def search_documents(
             if filters_date:
                 query = query.filter(and_(*filters_date))
             
+            if join_extracted:
+                query = query.distinct()
+
             # Get total count before pagination
             total_hits = query.count()
             
@@ -214,6 +245,7 @@ async def search_documents(
                     "status": status,
                     "data_start": data_start,
                     "data_end": data_end,
+                    "furnizor": furnizor,
                 },
                 "hits": hits,
                 "total_hits": total_hits,

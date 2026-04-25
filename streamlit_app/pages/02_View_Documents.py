@@ -64,6 +64,91 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Helper functions
+
+def _format_dosar_label(dosar: dict) -> str:
+    code = dosar.get("nomenclator_code") or dosar.get("nomenclator_name") or "Unknown"
+    number = dosar.get("dosar_number") or "N/A"
+    title = dosar.get("title") or "Untitled"
+    count = dosar.get("documents_count", 0)
+    return f"{code} / {number} · {title} ({count} docs)"
+
+
+def _dosar_matches_search(dosar: dict, query: str) -> bool:
+    if not query:
+        return True
+    text = " ".join(
+        str(dosar.get(key, ""))
+        for key in ["dosar_number", "title", "description", "nomenclator_code", "nomenclator_name"]
+        if dosar.get(key)
+    )
+    return query.lower() in text.lower()
+
+
+def _render_archive_node(node: dict, search_query: str, selected_dosar_id: str):
+    label = f"{node.get('code', 'N/A')} — {node.get('name', 'Unnamed Category')}"
+    with st.expander(label, expanded=False):
+        child_matches = []
+        for child in node.get("children", []):
+            if _node_has_matching_content(child, search_query):
+                _render_archive_node(child, search_query, selected_dosar_id)
+                child_matches.append(child)
+
+        dosare = [dosar for dosar in node.get("dosare", []) if _dosar_matches_search(dosar, search_query)]
+        if dosare:
+            for dosar in dosare:
+                dosar_label = _format_dosar_label(dosar)
+                cols = st.columns([5, 1])
+                cols[0].markdown(f"**{dosar_label}**")
+                if cols[1].button("Open folder", key=f"open_dosar_{dosar['id']}"):
+                    st.session_state.selected_dosar_id = str(dosar["id"])
+                    st.session_state.archive_dosar_details = None
+                    st.rerun()
+
+        if not child_matches and not dosare:
+            st.write("*No matching archive folders or dossiers in this category.*")
+
+
+def _node_has_matching_content(node: dict, query: str) -> bool:
+    if not query:
+        return True
+
+    text = " ".join(
+        str(node.get(key, ""))
+        for key in ["code", "name", "description"]
+        if node.get(key)
+    )
+    if query.lower() in text.lower():
+        return True
+
+    for dosar in node.get("dosare", []):
+        if _dosar_matches_search(dosar, query):
+            return True
+
+    return any(_node_has_matching_content(child, query) for child in node.get("children", []))
+
+
+def _filter_documents(documents: list[dict], year: str, supplier: str, doc_type: str) -> list[dict]:
+    filtered = []
+    for doc in documents:
+        if year != "All":
+            doc_date = doc.get("data") or doc.get("document_date") or doc.get("created_at")
+            if doc_date:
+                try:
+                    if str(datetime.fromisoformat(doc_date).year) != str(year):
+                        continue
+                except Exception:
+                    continue
+        if supplier and supplier.lower() not in str(doc.get("title", "")).lower() and supplier.lower() not in str(doc.get("description", "")).lower() and supplier.lower() not in str(doc.get("document_number", "")).lower():
+            # also check extracted supplier fields when available
+            extracted = doc.get("extracted_data_map") or {}
+            if supplier.lower() not in str(extracted.get("furnizor", "")).lower():
+                continue
+        if doc_type != "All" and str(doc.get("document_type", "")).upper() != doc_type:
+            continue
+        filtered.append(doc)
+    return filtered
+
 # ============================================================================
 # SIDEBAR - Authentication & Filters
 # ============================================================================
@@ -118,11 +203,17 @@ if st.session_state.auth_token:
         "Authorization": f"Bearer {st.session_state.auth_token}"
     }
     
-    # Initialize session state for search results
+    # Initialize session state for search results and archive browsing
     if "search_results" not in st.session_state:
         st.session_state.search_results = None
     if "selected_doc_id" not in st.session_state:
         st.session_state.selected_doc_id = None
+    if "archive_tree" not in st.session_state:
+        st.session_state.archive_tree = None
+    if "selected_dosar_id" not in st.session_state:
+        st.session_state.selected_dosar_id = None
+    if "archive_dosar_details" not in st.session_state:
+        st.session_state.archive_dosar_details = None
     
     st.divider()
     
@@ -650,137 +741,265 @@ if st.session_state.auth_token:
             st.error(f"Error: {str(e)}")
     
     else:
-        # SEARCH VIEW
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            search_query = st.text_input(
-                "Search",
-                placeholder="Search by title, number, supplier...",
-                help="Full-text search across documents"
-            )
-        
-        with col2:
-            doc_type = st.selectbox(
-                "Type",
-                ["All", "INVOICE", "CONTRACT", "REPORT", "OTHER"],
-                help="Filter by document type"
-            )
-        
-        with col3:
-            doc_status = st.selectbox(
-                "Status",
-                [
-                    "All",
-                    "REVIEW",
-                    "APPROVED",
-                    "RETURNED",
-                    "ARCHIVED",
-                    "PROCESSING",
-                    "CLASSIFIED",
-                    "EXTRACTED",
-                    "VALIDATED",
-                    "PENDING",
-                    "ERROR",
-                ],
-                help="Filter by processing status"
-            )
-        
-        # Search parameters
-        search_params = {
-            "limit": 20,
-            "offset": 0,
-        }
-        
-        if search_query:
-            search_params["q"] = search_query
-        if doc_type != "All":
-            search_params["tip_document"] = doc_type
-        if doc_status != "All":
-            search_params["status"] = doc_status
-        
-        # Perform search
-        if st.button("Search", type="primary", use_container_width=True):
-            try:
-                with st.spinner("Searching documents..."):
-                    query_string = "&".join([f"{k}={v}" for k, v in search_params.items()])
-                    response = requests.get(
-                        f"{API_BASE_URL}/documents/search?{query_string}",
-                        headers=headers,
-                        timeout=10
-                    )
-                
-                if response.status_code == 200:
-                    search_result = response.json()
-                    st.session_state.search_results = search_result
-                    st.success("Search completed")
+        search_tab, archive_tab = st.tabs(["Document Search", "Archive Browser"])
+
+        with search_tab:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                search_query = st.text_input(
+                    "Search",
+                    placeholder="Search by title, number, supplier...",
+                    help="Full-text search across documents"
+                )
+            with col2:
+                doc_type = st.selectbox(
+                    "Type",
+                    ["All", "INVOICE", "CONTRACT", "REPORT", "CORRESPONDENCE", "DECISION", "PROTOCOL", "OTHER"],
+                    help="Filter by document type"
+                )
+            with col3:
+                doc_status = st.selectbox(
+                    "Status",
+                    [
+                        "All",
+                        "REVIEW",
+                        "APPROVED",
+                        "RETURNED",
+                        "ARCHIVED",
+                        "PROCESSING",
+                        "CLASSIFIED",
+                        "EXTRACTED",
+                        "VALIDATED",
+                        "PENDING",
+                        "ERROR",
+                    ],
+                    help="Filter by processing status"
+                )
+
+            year_options = ["All"] + [str(y) for y in range(datetime.now().year, 2019, -1)]
+            year = st.selectbox("Year", year_options, index=0, help="Filter by document year")
+
+            search_params = {
+                "limit": 20,
+                "offset": 0,
+            }
+            if search_query:
+                search_params["q"] = search_query
+            if doc_type != "All":
+                search_params["tip_document"] = doc_type.lower()
+            if doc_status != "All":
+                search_params["status"] = doc_status.lower()
+            if year != "All":
+                search_params["data_start"] = f"{year}-01-01"
+                search_params["data_end"] = f"{year}-12-31"
+
+            if st.button("Search", type="primary", use_container_width=True):
+                try:
+                    with st.spinner("Searching documents..."):
+                        response = requests.get(
+                            f"{API_BASE_URL}/documents/search",
+                            headers=headers,
+                            params=search_params,
+                            timeout=10,
+                        )
+
+                    if response.status_code == 200:
+                        search_result = response.json()
+                        st.session_state.search_results = search_result
+                        st.success("Search completed")
+                    else:
+                        st.error(f"Search failed: {response.status_code}")
+                except requests.exceptions.ConnectionError:
+                    st.error("Cannot connect to API")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
+            if st.session_state.search_results:
+                hits = st.session_state.search_results.get("hits", [])
+                total = st.session_state.search_results.get("total_hits", 0)
+                st.markdown(f"### Results: {len(hits)} of {total} documents")
+
+                with st.expander("🔍 Debug Search Info"):
+                    st.write(f"**Search params:** {search_params}")
+                    st.write(f"**Total found:** {total}")
+                    st.write(f"**Shown:** {len(hits)}")
+                    if not hits:
+                        st.warning("Try broader search or check that documents are indexed in Meilisearch")
+
+                if hits:
+                    for doc in hits:
+                        with st.container(border=True):
+                            doc_id = doc.get("id", "N/A")
+                            doc_id_str = str(doc_id)
+                            title = doc.get("title", "Untitled")
+                            status = doc.get("status", "N/A")
+                            status_upper = str(status).upper()
+                            doc_type = doc.get("tip_document", "N/A")
+                            status_emoji = {
+                                "ARCHIVED": "📦",
+                                "APPROVED": "✅",
+                                "REVIEW": "🕵️",
+                                "RETURNED": "↩️",
+                                "PROCESSING": "🔄",
+                                "CLASSIFIED": "🏷️",
+                                "EXTRACTED": "🧾",
+                                "VALIDATED": "✓",
+                                "PENDING": "⏳",
+                                "ERROR": "❌",
+                            }
+                            col1, col2, col3 = st.columns([2, 1, 1])
+                            with col1:
+                                if st.button(
+                                    f"Document: {title}",
+                                    key=f"view_{doc_id_str}",
+                                    use_container_width=True,
+                                    type="secondary",
+                                ):
+                                    st.session_state.selected_doc_id = str(doc_id)
+                                    st.rerun()
+                            with col2:
+                                st.write(f"{status_emoji.get(status_upper, '❓')} **{status_upper}**")
+                            with col3:
+                                st.write(f"**{doc_type}**")
                 else:
-                    st.error(f"Search failed: {response.status_code}")
-            
-            except requests.exceptions.ConnectionError:
-                st.error("Cannot connect to API")
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-        
-        # Display cached search results
-        if st.session_state.search_results:
-            hits = st.session_state.search_results.get("hits", [])
-            total = st.session_state.search_results.get("total_hits", 0)
-            
-            st.markdown(f"### Results: {len(hits)} of {total} documents")
-            
-            # Debug info
-            with st.expander("🔍 Debug Search Info"):
-                st.write(f"**Query:** {search_params}")
-                st.write(f"**Total found:** {total}")
-                st.write(f"**Shown:** {len(hits)}")
-                if not hits:
-                    st.warning("Try broader search or check that documents are indexed in Meilisearch")
-            
-            if hits:
-                # Display results as clickable cards
-                for doc in hits:
-                    with st.container(border=True):
-                        doc_id = doc.get("id", "N/A")
-                        doc_id_str = str(doc_id)
-                        title = doc.get("title", "Untitled")
-                        status = doc.get("status", "N/A")
-                        status_upper = str(status).upper()
-                        doc_type = doc.get("tip_document", "N/A")
-                        
-                        status_emoji = {
-                            "ARCHIVED": "📦",
-                            "APPROVED": "✅",
-                            "REVIEW": "🕵️",
-                            "RETURNED": "↩️",
-                            "PROCESSING": "🔄",
-                            "CLASSIFIED": "🏷️",
-                            "EXTRACTED": "🧾",
-                            "VALIDATED": "✓",
-                            "PENDING": "⏳",
-                            "ERROR": "❌",
-                        }
-                        
-                        col1, col2, col3 = st.columns([2, 1, 1])
-                        
-                        with col1:
-                            if st.button(
-                                f"Document: {title}",
-                                key=f"view_{doc_id_str}",
-                                use_container_width=True,
-                                type="secondary"
-                            ):
-                                # Store as string, will be converted in detail view
-                                st.session_state.selected_doc_id = str(doc_id)
-                                st.rerun()
-                        
-                        with col2:
-                            st.write(f"{status_emoji.get(status_upper, '❓')} **{status_upper}**")
-                        
-                        with col3:
-                            st.write(f"**{doc_type}**")
+                    st.info("No documents found matching your search criteria")
+
+        with archive_tab:
+            st.markdown("### Archive Folder Browser")
+            st.info(
+                "Browse archived dossiers by hierarchical nomenclator categories, then open documents from the selected folder."
+            )
+
+            archive_search_query = st.text_input(
+                "Archive Search",
+                placeholder="Search folder names, codes, or dossier titles...",
+                help="Filter the archive hierarchy and dossier labels",
+                key="archive_search_query",
+            )
+
+            filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+            selected_department = "All"
+            if st.session_state.archive_tree:
+                category_options = ["All"]
+                roots = st.session_state.archive_tree.get("roots", [])
+                for root in roots:
+                    category_options.append(root.get("code") or root.get("name") or "Unnamed")
+                with filter_col1:
+                    selected_department = st.selectbox(
+                        "Department / Category",
+                        category_options,
+                        help="Show only dossiers from a top-level archive category",
+                        key="archive_department",
+                    )
             else:
-                st.info("No documents found matching your search criteria")
+                with filter_col1:
+                    selected_department = st.selectbox(
+                        "Department / Category",
+                        ["All"],
+                        help="Show only dossiers from a top-level archive category",
+                        key="archive_department",
+                    )
+            with filter_col2:
+                archive_year = st.selectbox(
+                    "Year",
+                    ["All"] + [str(y) for y in range(datetime.now().year, 2019, -1)],
+                    index=0,
+                    help="Filter documents by year when a dossier is selected",
+                    key="archive_year",
+                )
+            with filter_col3:
+                supplier_filter = st.text_input(
+                    "Supplier",
+                    placeholder="Supplier name or keyword",
+                    help="Filter documents in the selected dossier by supplier",
+                    key="archive_supplier",
+                )
+            with filter_col4:
+                archive_doc_type = st.selectbox(
+                    "Document Type",
+                    ["All", "INVOICE", "CONTRACT", "REPORT", "CORRESPONDENCE", "DECISION", "PROTOCOL", "OTHER"],
+                    key="archive_doc_type",
+                    help="Filter documents in the selected dossier by document type",
+                )
+
+            if st.button("Refresh archive tree", type="secondary", use_container_width=True):
+                st.session_state.archive_tree = None
+                st.session_state.archive_dosar_details = None
+                st.session_state.selected_dosar_id = None
+                st.experimental_rerun()
+
+            if st.session_state.archive_tree is None:
+                try:
+                    with st.spinner("Loading archive hierarchy..."):
+                        response = requests.get(
+                            f"{API_BASE_URL}/archive/tree",
+                            headers=headers,
+                            timeout=10,
+                        )
+                    if response.status_code == 200:
+                        st.session_state.archive_tree = response.json()
+                    else:
+                        st.error(f"Unable to load archive tree: {response.status_code}")
+                except requests.exceptions.ConnectionError:
+                    st.error("Cannot connect to API")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
+            archive_tree = st.session_state.archive_tree
+            if archive_tree:
+                roots = archive_tree.get("roots", [])
+                if selected_department != "All":
+                    roots = [root for root in roots if root.get("code") == selected_department or root.get("name") == selected_department]
+
+                if not roots:
+                    st.warning("No archive folders match the selected department. Refresh the tree or choose All.")
+                else:
+                    for root in roots:
+                        _render_archive_node(root, st.session_state.get("archive_search_query", ""), st.session_state.selected_dosar_id)
+
+            if st.session_state.selected_dosar_id:
+                try:
+                    if not st.session_state.archive_dosar_details or st.session_state.archive_dosar_details.get("id") != int(st.session_state.selected_dosar_id):
+                        with st.spinner("Loading dossier details..."):
+                            dosar_response = requests.get(
+                                f"{API_BASE_URL}/archive/dosar/{st.session_state.selected_dosar_id}",
+                                headers=headers,
+                                timeout=10,
+                            )
+                        if dosar_response.status_code == 200:
+                            st.session_state.archive_dosar_details = dosar_response.json()
+                        else:
+                            st.error(f"Unable to load dossier details: {dosar_response.status_code}")
+
+                    if st.session_state.archive_dosar_details:
+                        dosar = st.session_state.archive_dosar_details
+                        st.markdown(f"#### Selected Dossier: {dosar.get('nomenclator_code', 'N/A')} / {dosar.get('dosar_number', 'N/A')} - {dosar.get('title', '')}")
+                        st.write(dosar.get("description", "No description available."))
+
+                        documents = dosar.get("documents", [])
+                        filtered_docs = _filter_documents(documents, archive_year, supplier_filter, archive_doc_type)
+
+                        st.markdown(f"**Documents in dossier:** {len(filtered_docs)} of {len(documents)}")
+                        if not filtered_docs:
+                            st.info("No documents match the current filters in this dossier.")
+                        else:
+                            for doc in filtered_docs:
+                                with st.container(border=True):
+                                    doc_cols = st.columns([4, 1, 1, 1])
+                                    doc_cols[0].markdown(f"**{doc.get('title', 'Untitled')}**\n- {doc.get('document_number', '')}")
+                                    doc_cols[1].markdown(f"_{(doc.get('document_type') or '').upper()}_")
+                                    doc_cols[2].markdown(f"{doc.get('status', 'N/A').upper()}")
+                                    if doc_cols[3].button(
+                                        "Open details",
+                                        key=f"archive_open_doc_{doc.get('id')}",
+                                        use_container_width=True,
+                                    ):
+                                        st.session_state.selected_doc_id = str(doc.get('id'))
+                                        st.rerun()
+                except requests.exceptions.ConnectionError:
+                    st.error("Cannot connect to API")
+                except Exception as e:
+                    st.error(f"Error loading dossier details: {str(e)}")
 
 else:
     st.warning("Please login first to view documents")

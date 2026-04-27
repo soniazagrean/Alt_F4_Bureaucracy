@@ -43,6 +43,7 @@ class SearchService:
                 'tip_document',
                 'furnizor',
                 'nr_factura',
+                'invoice_number',
                 'cod_nomenclator',
                 'title',
                 'description'
@@ -117,7 +118,8 @@ class SearchService:
             'tip_document': document_obj.document_type.value if document_obj.document_type else 'other',
             'status': document_obj.status.value if document_obj.status else 'pending',
             'furnizor': extracted.get('furnizor', ''),
-            'nr_factura': extracted.get('nr_factura', '') or document_obj.document_number or '',
+            'nr_factura': extracted.get('nr_factura', '') or document_obj.invoice_number or '',
+            'invoice_number': document_obj.invoice_number or extracted.get('nr_factura', '') or '',
             'cod_nomenclator': extracted.get('cod_nomenclator', ''),
             'data': document_obj.document_date.isoformat() if document_obj.document_date else document_obj.created_at.isoformat(),
             'amount': float(document_obj.amount) if document_obj.amount else 0.0,

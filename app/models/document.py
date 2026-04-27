@@ -42,6 +42,7 @@ class Document(Base):
 
     # Document identification
     document_number = Column(String(255), unique=True, nullable=False, index=True)
+    invoice_number = Column(String(255), nullable=True, index=True)
     document_type = Column(Enum(DocumentTypeEnum, create_type=False), nullable=False)
     title = Column(String(511), nullable=False)
     description = Column(Text, nullable=True)

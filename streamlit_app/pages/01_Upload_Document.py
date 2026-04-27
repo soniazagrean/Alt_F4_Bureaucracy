@@ -116,6 +116,7 @@ if st.session_state.auth_token:
                 response = requests.post(
                     f"{API_BASE_URL}/documents/upload",
                     files=files,
+                    data={"auto_archive": str(auto_archive).lower()},
                     headers=headers,
                     timeout=30
                 )
@@ -150,7 +151,10 @@ if st.session_state.auth_token:
                         "CLASSIFIED": "📊 blue",
                         "EXTRACTED": "✂️ blue",
                         "VALIDATED": "✓ green",
+                        "REVIEW": "📝 yellow",
+                        "APPROVED": "✅ green",
                         "ARCHIVED": "📦 green",
+                        "RETURNED": "↩️ red",
                         "ERROR": "❌ red",
                     }
                     
@@ -206,8 +210,11 @@ if st.session_state.auth_token:
                                 "PROCESSING": 25,
                                 "CLASSIFIED": 50,
                                 "EXTRACTED": 75,
-                                "VALIDATED": 90,
+                                "VALIDATED": 85,
+                                "REVIEW": 90,
+                                "APPROVED": 95,
                                 "ARCHIVED": 100,
+                                "RETURNED": 40,
                                 "ERROR": 0,
                                 "PENDING": 10,
                                 "UPLOADED": 15,
@@ -232,7 +239,8 @@ if st.session_state.auth_token:
                                     st.write(f"**Type:** {doc.get('document_type', 'N/A')}")
                                 
                                 with detail_cols[1]:
-                                    st.write(f"**Number:** {doc.get('document_number', 'N/A')}")
+                                    st.write(f"**Invoice Number (extracted):** {doc.get('invoice_number') or 'N/A'}")
+                                    st.write(f"**Document Number (internal):** {doc.get('document_number', 'N/A')}")
                                     st.write(f"**Amount:** {doc.get('amount', 'N/A')} {doc.get('currency', '')}")
                                 
                                 with detail_cols[2]:
@@ -242,11 +250,22 @@ if st.session_state.auth_token:
                                     if archived:
                                         st.write(f"**Archived:** {archived}")
                             
-                            # Check if done
-                            if status in ["ARCHIVED", "ERROR"]:
+                            # Check if done / review requires operator action
+                            if status in ["ARCHIVED", "ERROR", "REVIEW"]:
                                 if status == "ARCHIVED":
-                                    st.success(f"Document processing completed successfully!")
+                                    st.success("Document processing completed successfully!")
                                     st.balloons()
+                                elif status == "REVIEW":
+                                    details_placeholder.info(
+                                        "Documentul este in REVIEW. Daca auto-archive este activ, trebuie sa existe dosar/nomenclator setat."
+                                    )
+                                    if st.button(
+                                        "Open in View Documents",
+                                        use_container_width=True,
+                                        key=f"open_view_{document_id}",
+                                    ):
+                                        st.session_state.selected_doc_id = str(document_id)
+                                        st.switch_page("pages/02_View_Documents.py")
                                 else:
                                     error_msg = doc.get("error_message", "Unknown error")
                                     st.error(f"Processing failed: {error_msg}")
@@ -288,7 +307,8 @@ st.markdown("""
 - **Status Times:** 
   - PROCESSING → CLASSIFIED: ~5-10s (PDF → images, classification)
   - CLASSIFIED → EXTRACTED: ~5-15s (invoice extraction)
-  - EXTRACTED → ARCHIVED: ~2-5s (nomenclator suggestion, graph population)
+    - EXTRACTED → REVIEW: ~2-5s (nomenclator suggestion, graph population)
+    - REVIEW → APPROVED/ARCHIVED: manual (confirmare + aprobare + arhivare)
 
 ### Related
 - [API Documentation](http://localhost:8000/docs)

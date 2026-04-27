@@ -220,7 +220,7 @@ def populate_graph_for_document(document_id: str) -> None:
             else (str(doc.status) if doc.status is not None else None)
         )
 
-        invoice_number = extracted.get("nr_factura") or doc.document_number
+        invoice_number = extracted.get("nr_factura") or doc.invoice_number or doc.document_number
         invoice_date = (
             doc.document_date.isoformat()
             if getattr(doc, "document_date", None)

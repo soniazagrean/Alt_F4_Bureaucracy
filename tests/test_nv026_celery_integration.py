@@ -3,7 +3,7 @@ NV-026: End-to-end Celery pipeline integration tests
 
 Tests verify that:
 1. Document processes through full pipeline (PDF → pages → classification → extraction → graph)
-2. Status transitions from PROCESSING → CLASSIFIED → EXTRACTED → VALIDATED → ARCHIVED
+    2. Status transitions from PROCESSING → CLASSIFIED → EXTRACTED → VALIDATED → REVIEW
 3. PostgreSQL fields are populated with extracted invoice data
 4. Neo4j node is created with correct relationships
 5. MinIO stores images correctly
@@ -281,7 +281,7 @@ class TestCeleryPipelineIntegration:
         mock_meilisearch,
         mock_invoice_data
     ):
-        """Test complete pipeline from upload to archive."""
+        """Test complete pipeline from upload to review."""
         document_id = test_document.id
         
         # Execute the pipeline task
@@ -296,9 +296,9 @@ class TestCeleryPipelineIntegration:
         # ====================================================================
         # ASSERTION 1: Status Transition
         # ====================================================================
-        # Pipeline should end with ARCHIVED status
-        assert test_document.status == DocumentStatusEnum.ARCHIVED, \
-            f"Expected status ARCHIVED, got {test_document.status}"
+        # Pipeline should end with REVIEW status
+        assert test_document.status == DocumentStatusEnum.REVIEW, \
+            f"Expected status REVIEW, got {test_document.status}"
         
         # ====================================================================
         # ASSERTION 2: PostgreSQL Fields Populated
@@ -317,9 +317,9 @@ class TestCeleryPipelineIntegration:
         assert test_document.confidence is not None, \
             f"Confidence should be set, got {test_document.confidence}"
         
-        # Archived timestamp should be set
-        assert test_document.archived_at is not None, \
-            f"archived_at should be set"
+        # Archived timestamp should not be set before manual archive
+        assert test_document.archived_at is None, \
+            "archived_at should be empty before manual archive"
         
         # ====================================================================
         # ASSERTION 3: ExtractedData Records Created
@@ -382,9 +382,9 @@ class TestCeleryPipelineIntegration:
         # Refresh to get updated status
         db_session.refresh(test_document)
         
-        # Verify final status is ARCHIVED
-        assert test_document.status == DocumentStatusEnum.ARCHIVED, \
-            "Document should end in ARCHIVED status"
+        # Verify final status is REVIEW
+        assert test_document.status == DocumentStatusEnum.REVIEW, \
+            "Document should end in REVIEW status"
 
 
 # ============================================================================

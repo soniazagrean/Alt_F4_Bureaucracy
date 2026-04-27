@@ -1,4 +1,5 @@
 from celery import Celery
+from sqlalchemy import delete
 from app.config import settings
 from app.services.pdf_utils import pdf_to_pages_safe
 from app.services.storage import storage
@@ -7,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import tempfile
 from pathlib import Path
+from app.models.alert import FraudAlert, AnomalyTypeEnum
 
 logger = logging.getLogger(__name__)
 
@@ -357,47 +359,77 @@ def index_document_in_meilisearch_task(document_id: int):
     from app.models.document import Document
     from app.services.search import SearchService
     
+
+    db = SessionLocal()
     try:
-        logger.info(f"Indexing document {document_id} in MeiliSearch")
-        
-        db = SessionLocal()
-        try:
-            # Fetch document and related extracted data
-            doc = db.query(Document).filter(Document.id == document_id).first()
-            if not doc:
-                logger.warning(f"Document {document_id} not found for indexing")
-                return {
-                    "status": "document_not_found",
-                    "document_id": document_id
-                }
-            
-            # Fetch extracted data as dictionary
-            from app.models.document import ExtractedData
-            extracted_rows = db.query(ExtractedData).filter(
-                ExtractedData.document_id == document_id
-            ).all()
-            
-            extracted_dict = {}
-            for row in extracted_rows:
-                extracted_dict[row.field_name] = row.field_value
-            
-            # Prepare document for indexing
-            search_service = SearchService()
-            doc_for_index = search_service.prepare_document_for_indexing(doc, extracted_dict)
-            
-            # Add to index
-            result = search_service.add_documents([doc_for_index])
-            
-            logger.info(f"Successfully indexed document {document_id}")
+        # Fetch document and related extracted data
+        doc = db.query(Document).filter(Document.id == document_id).first()
+        if not doc:
+            logger.warning(f"Document {document_id} not found for indexing")
             return {
-                "status": "success",
-                "document_id": document_id,
-                "indexed_fields": list(doc_for_index.keys())
+                "status": "document_not_found",
+                "document_id": document_id
             }
-            
-        finally:
-            db.close()
-            
+
+        try:
+            logger.info(f"Running automated AI Forensics for document {document_id}")
+            fraud_score = 0.0
+            alerts = []
+
+            if doc.amount and doc.amount > 50000:
+                fraud_score += 0.4
+                alerts.append(FraudAlert(
+                    document_id=document_id,
+                    anomaly_type=AnomalyTypeEnum.INVALID_AMOUNT,
+                    fraud_score=0.4,
+                    risk_level="high",
+                    description=f"Transaction amount ({doc.amount}) exceeds standard threshold."
+                ))
+
+            if doc.confidence and doc.confidence < 0.6:
+                fraud_score += 0.3
+                alerts.append(FraudAlert(
+                    document_id=document_id,
+                    anomaly_type=AnomalyTypeEnum.OCR_ERROR,
+                    fraud_score=0.3,
+                    risk_level="medium",
+                    description="AI extraction confidence is low. Potential data mismatch."
+                ))
+
+            doc.fraud_score = min(fraud_score, 1.0)
+            for alert in alerts:
+                db.add(alert)
+
+            db.commit()
+            logger.info(f"✓ Forensics analysis complete for doc {document_id}. Score: {doc.fraud_score}")
+        except Exception as f_exc:
+            logger.error(f"Forensics stage failed for doc {document_id}: {f_exc}")
+            db.rollback()
+
+        # Fetch extracted data as dictionary
+        from app.models.document import ExtractedData
+        extracted_rows = db.query(ExtractedData).filter(
+            ExtractedData.document_id == document_id
+        ).all()
+
+        extracted_dict = {}
+        for row in extracted_rows:
+            extracted_dict[row.field_name] = row.field_value
+
+        # Prepare document for indexing
+        search_service = SearchService()
+        doc_for_index = search_service.prepare_document_for_indexing(doc, extracted_dict)
+
+        # Add to index
+        search_service.add_documents([doc_for_index])
+
+        logger.info(f"Successfully indexed document {document_id}")
+        return {
+            "status": "success",
+            "document_id": document_id,
+            "indexed_fields": list(doc_for_index.keys())
+        }
+
     except Exception as e:
         logger.error(f"Failed to index document {document_id}: {str(e)}")
         return {
@@ -405,10 +437,12 @@ def index_document_in_meilisearch_task(document_id: int):
             "document_id": document_id,
             "error": str(e)
         }
+    finally:
+        db.close()
 
 
 @celery_app.task(bind=True, max_retries=3)
-def process_document_task(self, document_id: int):
+def process_document_task(self, document_id: int, auto_archive: bool = False):
     """Orchestrates the full NV-014 pipeline for a single document."""
     from app.models.document import Document, DocumentStatusEnum, DocumentPage, ExtractedData
     from app.services.document_classification import DocumentClassificationService
@@ -429,6 +463,8 @@ def process_document_task(self, document_id: int):
             raise ValueError(f"Document {document_id} not found")
 
         doc.status = DocumentStatusEnum.PROCESSING
+        doc.error_message = None
+        doc.error_timestamp = None
         db.commit()
 
         # Download PDF from MinIO
@@ -445,6 +481,11 @@ def process_document_task(self, document_id: int):
         images, error = pdf_to_pages_safe(pdf_tmp.name, dpi=300)
         if error or not images:
             raise RuntimeError(f"PDF to image conversion failed: {error or 'no pages'}")
+
+        # Make retries idempotent: clear previously generated rows for this document.
+        db.execute(delete(DocumentPage).where(DocumentPage.document_id == document_id))
+        db.execute(delete(ExtractedData).where(ExtractedData.document_id == document_id))
+        db.commit()
 
         # Store page images and DB page records
         minio_pages = []
@@ -542,9 +583,28 @@ def process_document_task(self, document_id: int):
                 extracted_metadata = invoice_data.dict()
                 # map some fields back to Document
                 doc.amount = float(invoice_data.total)
-                if invoice_data.currency is None:
-                    doc.currency = "RON"
-                doc.document_number = invoice_data.nr_factura or doc.document_number
+                doc.currency = invoice_data.currency or "RON"
+
+                extracted_invoice_number = invoice_data.nr_factura
+                doc.invoice_number = extracted_invoice_number or doc.invoice_number
+                if extracted_invoice_number:
+                    duplicate_doc = (
+                        db.query(Document)
+                        .filter(
+                            Document.document_number == extracted_invoice_number,
+                            Document.id != document_id,
+                        )
+                        .first()
+                    )
+                    if duplicate_doc:
+                        logger.warning(
+                            "Duplicate extracted invoice number '%s' for document %s; keeping existing document_number '%s'",
+                            extracted_invoice_number,
+                            document_id,
+                            doc.document_number,
+                        )
+                    else:
+                        doc.document_number = extracted_invoice_number
 
                 for key, value in extracted_metadata.items():
                     db.add(ExtractedData(
@@ -569,6 +629,33 @@ def process_document_task(self, document_id: int):
         )
 
         suggestion_result = nomenclator_service.suggest_nomenclator(request_body, num_suggestions=3)
+        if suggestion_result and suggestion_result.success and suggestion_result.primary_suggestion:
+            primary = suggestion_result.primary_suggestion
+            suggestion_fields = {
+                "cod_nomenclator": primary.cod_nomenclator,
+                "dosar_propus": primary.dosar_propus,
+                "termen_pastrare": str(primary.termen_pastrare.value),
+                "nivel_confidentialitate": str(primary.nivel_confidentialitate.value),
+                "nomenclator_confidence": str(primary.confidence),
+                "nomenclator_rationale": primary.rationale,
+            }
+
+            try:
+                import json
+                alternatives = [s.dict() for s in suggestion_result.suggestions[1:]]
+                suggestion_fields["nomenclator_alternative"] = json.dumps(alternatives)
+            except Exception:
+                suggestion_fields["nomenclator_alternative"] = "[]"
+
+            for field_name, field_value in suggestion_fields.items():
+                db.add(ExtractedData(
+                    document_id=document_id,
+                    field_name=field_name,
+                    field_value=str(field_value),
+                    extraction_confidence=primary.confidence,
+                ))
+            db.commit()
+
         previous_status = doc.status
         doc.status = DocumentStatusEnum.REVIEW
 
@@ -602,6 +689,118 @@ def process_document_task(self, document_id: int):
             )
         except Exception as audit_exc:
             logger.warning("Failed to write archive audit log: %s", audit_exc)
+
+        if auto_archive:
+            if not doc.nomenclator_id or not doc.dosar_id:
+                try:
+                    from app.models.archive import Dosar, NomenclatorEntry, PastrareEnum
+
+                    inbox_entry = db.query(NomenclatorEntry).filter(NomenclatorEntry.code == "INBOX").first()
+                    if not inbox_entry:
+                        root_entry = db.query(NomenclatorEntry).filter(NomenclatorEntry.code == "ROOT").first()
+                        inbox_entry = NomenclatorEntry(
+                            code="INBOX",
+                            name="Inbox (Auto Archive)",
+                            description="Default auto-archive inbox",
+                            parent_id=root_entry.id if root_entry else None,
+                            is_active=1,
+                        )
+                        db.add(inbox_entry)
+                        db.commit()
+                        db.refresh(inbox_entry)
+
+                    inbox_dosar = db.query(Dosar).filter(Dosar.dosar_number == "INBOX-0001").first()
+                    if not inbox_dosar:
+                        inbox_dosar = Dosar(
+                            dosar_number="INBOX-0001",
+                            title="Inbox",
+                            description="Default auto-archive inbox",
+                            nomenclator_id=inbox_entry.id,
+                            termen_pastrare=PastrareEnum.FIVE_YEARS,
+                        )
+                        db.add(inbox_dosar)
+                        db.commit()
+                        db.refresh(inbox_dosar)
+
+                    doc.nomenclator_id = inbox_entry.id
+                    doc.dosar_id = inbox_dosar.id
+                    db.commit()
+                except Exception as inbox_exc:
+                    logger.warning("Failed to assign INBOX for doc %s: %s", doc.id, inbox_exc)
+
+            if doc.nomenclator_id and doc.dosar_id:
+                try:
+                    from app.models.audit import AuditActionEnum
+                    from app.services.audit_service import (
+                        get_or_create_system_user,
+                        log_audit_event,
+                        serialize_audit_value,
+                    )
+
+                    system_user = get_or_create_system_user(db)
+
+                    if not doc.nomenclator_confirmed:
+                        doc.nomenclator_confirmed = True
+                        doc.nomenclator_confirmed_at = datetime.utcnow()
+
+                    prev_status = doc.status
+                    doc.status = DocumentStatusEnum.APPROVED
+                    db.commit()
+
+                    log_audit_event(
+                        db=db,
+                        user=system_user,
+                        action=AuditActionEnum.APPROVE,
+                        resource_type="document",
+                        resource_id=doc.id,
+                        document_id=doc.id,
+                        description="Document auto-approved",
+                        changes={
+                            "status": {
+                                "from": serialize_audit_value(prev_status),
+                                "to": serialize_audit_value(doc.status),
+                            }
+                        },
+                        ip_address=None,
+                    )
+
+                    prev_archived_at = doc.archived_at
+                    prev_status = doc.status
+                    doc.status = DocumentStatusEnum.ARCHIVED
+                    if not doc.archived_at:
+                        doc.archived_at = datetime.utcnow()
+                    db.commit()
+
+                    changes = {
+                        "status": {
+                            "from": serialize_audit_value(prev_status),
+                            "to": serialize_audit_value(doc.status),
+                        }
+                    }
+                    if prev_archived_at != doc.archived_at:
+                        changes["archived_at"] = {
+                            "from": serialize_audit_value(prev_archived_at),
+                            "to": serialize_audit_value(doc.archived_at),
+                        }
+
+                    log_audit_event(
+                        db=db,
+                        user=system_user,
+                        action=AuditActionEnum.ARCHIVE,
+                        resource_type="document",
+                        resource_id=doc.id,
+                        document_id=doc.id,
+                        description="Document auto-archived",
+                        changes=changes,
+                        ip_address=None,
+                    )
+                except Exception as audit_exc:
+                    logger.warning("Failed to auto-approve/archive doc %s: %s", doc.id, audit_exc)
+            else:
+                logger.info(
+                    "Auto-archive skipped for document %s: missing dosar/nomenclator",
+                    doc.id,
+                )
 
         try:
             from app.services.graph_service import populate_graph_for_document

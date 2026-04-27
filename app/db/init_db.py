@@ -3,6 +3,7 @@ Database initialization script - creates all tables and seeds initial data
 """
 from app.db.database import init_db, SessionLocal, engine
 from app.models import User, NomenclatorEntry, RoleEnum, PastrareEnum
+from app.models.archive import Dosar
 from datetime import datetime
 
 def seed_initial_data():
@@ -56,6 +57,7 @@ def seed_initial_data():
             {"code": "LEGAL", "name": "Legal Documents", "parent_code": "ROOT"},
             {"code": "LEGAL-CON", "name": "Contracts", "parent_code": "LEGAL"},
             {"code": "LEGAL-DEC", "name": "Decisions", "parent_code": "LEGAL"},
+            {"code": "INBOX", "name": "Inbox (Auto Archive)", "parent_code": "ROOT"},
         ]
 
         for entry_data in default_entries:
@@ -79,6 +81,24 @@ def seed_initial_data():
 
         db.commit()
         print("✓ Nomenclator entries created")
+
+        # Ensure default INBOX dosar exists
+        inbox_entry = db.query(NomenclatorEntry).filter(NomenclatorEntry.code == "INBOX").first()
+        if inbox_entry:
+            inbox_dosar = db.query(Dosar).filter(Dosar.dosar_number == "INBOX-0001").first()
+            if not inbox_dosar:
+                inbox_dosar = Dosar(
+                    dosar_number="INBOX-0001",
+                    title="Inbox",
+                    description="Default auto-archive inbox",
+                    nomenclator_id=inbox_entry.id,
+                    termen_pastrare=PastrareEnum.FIVE_YEARS,
+                )
+                db.add(inbox_dosar)
+                db.commit()
+                print("✓ INBOX dosar created")
+            else:
+                print("✓ INBOX dosar already exists")
 
     except Exception as e:
         print(f"✗ Error seeding data: {e}")

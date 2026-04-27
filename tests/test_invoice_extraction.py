@@ -29,9 +29,9 @@ def invoice_sample_data(fixture_dir):
 
 
 @pytest.mark.parametrize("pdf_filename", [
-    "invoice_valid.pdf",
-    "invoice_no_stamp.pdf",
-    "invoice_wrong_vat.pdf"
+    "invoice_valid.png",
+    "invoice_no_stamp.png",
+    "invoice_wrong_vat.png"
 ])
 def test_invoice_extraction_pipeline(invoice_service, fixture_dir, pdf_filename, invoice_sample_data):
     """Test end-to-end invoice extraction pipeline for each PDF fixture."""
@@ -69,8 +69,8 @@ def test_invoice_extraction_pipeline(invoice_service, fixture_dir, pdf_filename,
         except ValidationError as e:
             pytest.fail(f"Pydantic validation failed for {pdf_filename}: {e}")
 
-        # For invoice_valid.pdf, cross-check key fields against fixture
-        if pdf_filename == "invoice_valid.pdf":
+        # For invoice_valid.png, cross-check key fields against fixture
+        if pdf_filename == "invoice_valid.png":
             assert validated_invoice.nr_factura == invoice_sample_data["nr_factura"]
             assert str(validated_invoice.total) == str(invoice_sample_data["total"])
             assert str(validated_invoice.TVA) == str(invoice_sample_data["TVA"])
@@ -80,7 +80,7 @@ def test_invoice_extraction_pipeline(invoice_service, fixture_dir, pdf_filename,
 
 def test_invoice_extraction_validation_error(invoice_service, fixture_dir):
     """Test that malformed extraction results raise ValidationError."""
-    pdf_path = fixture_dir / "invoices" / "invoice_valid.pdf"
+    pdf_path = fixture_dir / "invoices" / "invoice_valid.png"
 
     # Mock API to return malformed data that will fail validation
     malformed_data = {

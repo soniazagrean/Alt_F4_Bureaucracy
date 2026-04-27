@@ -33,7 +33,7 @@ The system is built with the following components:
    cd /path/to/Alt_F4_Bureaucracy
    ```
 
-2. **Create a `.env` file** (optional - uses defaults if not provided):
+2. **Create a `.env` file** (recommended for stable demo runs):
 
    ```bash
    # Database Configuration
@@ -69,24 +69,27 @@ The system is built with the following components:
 
    # Streamlit Configuration
    STREAMLIT_PORT=8501
+
+   # AI Services
+   OPENAI_API_KEY=your_openai_key_here
    ```
 
 3. **Start all services with Docker Compose**:
 
    ```bash
-   docker-compose up -d
+   docker compose up -d --build
    ```
 
    For verbose output and debugging:
 
    ```bash
-   docker-compose up
+   docker compose up
    ```
 
 4. **Wait for services to be ready** (health checks run automatically):
 
    ```bash
-   docker-compose ps
+   docker compose ps
    ```
 
    All services should show `healthy` status before proceeding.
@@ -158,43 +161,43 @@ Alt_F4_Bureaucracy/
 
 ```bash
 # Start all services in background
-docker-compose up -d
+docker compose up -d
 
 # Start specific service(s)
-docker-compose up -d fastapi
-docker-compose up -d streamlit
+docker compose up -d fastapi
+docker compose up -d streamlit
 ```
 
 ### View Logs
 
 ```bash
 # View all service logs
-docker-compose logs -f
+docker compose logs -f
 
 # View specific service logs
-docker-compose logs -f fastapi
-docker-compose logs -f celery-worker
-docker-compose logs -f streamlit
+docker compose logs -f fastapi
+docker compose logs -f celery-worker
+docker compose logs -f streamlit
 ```
 
 ### Stop Services
 
 ```bash
 # Stop all services
-docker-compose down
+docker compose down
 
 # Stop and remove volumes (careful - data will be deleted)
-docker-compose down -v
+docker compose down -v
 ```
 
 ### Rebuild Services
 
 ```bash
 # Rebuild all services
-docker-compose up -d --build
+docker compose up -d --build
 
 # Rebuild specific service
-docker-compose up -d --build fastapi
+docker compose up -d --build fastapi
 ```
 
 ### Access Service Shells
@@ -247,14 +250,14 @@ docker exec -it alt-postgres psql -U postgres -d alt_db
 ### Services fail to start
 
 - Check Docker is running: `docker ps`
-- Review logs: `docker-compose logs`
+- Review logs: `docker compose logs`
 - Ensure ports are not already in use: `netstat -an | grep LISTEN`
 
 ### Database connection errors
 
-- Verify PostgreSQL is healthy: `docker-compose ps postgres`
+- Verify PostgreSQL is healthy: `docker compose ps postgres`
 - Check connection string in environment variables
-- Reset database: `docker-compose down -v && docker-compose up -d`
+- Reset database: `docker compose down -v && docker compose up -d`
 
 ### Memory issues with Neo4j
 
@@ -323,10 +326,45 @@ Use this section as a checklist for manual testing in Swagger (`/docs`) or with 
 
 ## Team Collaboration
 
-- Pull changes and rebuild: `docker-compose down && git pull && docker-compose up -d --build`
+- Pull changes and rebuild: `docker compose down && git pull && docker compose up -d --build`
 - Share environment variables via `.env.example` (without secrets)
 - Document schema changes in `DATABASE_SCHEMA.md` and `MIGRATIONS.md`
 - Use Alembic migrations for all database changes
+
+## Demo Quickstart (Production-like)
+
+Use this compact flow right before a live presentation:
+
+```bash
+# 1) Build and start all services
+docker compose up -d --build
+
+# 2) Verify core health
+docker compose ps
+curl -s http://localhost:8000/health
+curl -s http://localhost:8000/db/status
+
+# 3) Keep these logs open in separate terminals
+docker compose logs -f fastapi
+docker compose logs -f celery-worker
+```
+
+Expected result:
+- all containers are `Up`
+- core dependencies (`postgres`, `redis`, `neo4j`, `meilisearch`, `minio`) are `healthy`
+- `/health` returns `{"status":"healthy" ...}`
+
+## Demo Checklist (5 minutes)
+
+- [ ] Log in to Streamlit (`http://localhost:8501`)
+- [ ] Upload a PDF from fixtures (`auto-archive` ON or OFF, explain the difference)
+- [ ] Show live status transitions until `REVIEW` / `ARCHIVED`
+- [ ] Open `View Documents` and present:
+  - [ ] AI Document Classification (type + confidence)
+  - [ ] Extracted invoice fields
+  - [ ] AI Nomenclator Suggestions (code, confidence, alternatives)
+- [ ] Show search and related documents
+- [ ] Complete workflow with approve/archive or explain manual review path
 
 ---
 

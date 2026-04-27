@@ -88,10 +88,6 @@ app.include_router(nomenclator_router)
 from app.routes.routes_auth import router as auth_router
 app.include_router(auth_router)
 
-# Include document router suggestions
-from app.routes import documents
-app.include_router(documents.router, tags = ["Documents"])
-
 # Include document detail CRUD router
 from app.routes.routes_documents import router as documents_detail_router
 app.include_router(documents_detail_router)

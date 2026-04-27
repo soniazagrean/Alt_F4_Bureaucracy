@@ -1231,10 +1231,10 @@ async def return_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    if doc.status != DocumentStatusEnum.REVIEW:
+    if doc.status not in [DocumentStatusEnum.REVIEW, DocumentStatusEnum.VALIDATED]:
         raise HTTPException(
             status_code=400,
-            detail=f"Can only return during REVIEW. Current status: {doc.status.value}",
+            detail=f"Can only return during REVIEW or VALIDATED. Current status: {doc.status.value}",
         )
 
     previous_status = doc.status

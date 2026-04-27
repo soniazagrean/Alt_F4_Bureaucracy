@@ -1,8 +1,9 @@
 from datetime import timedelta, datetime
+import json
 from typing import Any, Optional, List
 import logging
 
-from fastapi import APIRouter, UploadFile, Depends, File, HTTPException, Query, Request, status
+from fastapi import APIRouter, UploadFile, Depends, File, HTTPException, Query, Request, status, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
@@ -32,17 +33,18 @@ from pydantic import BaseModel
 import hashlib
 import uuid
 from app.schemas import DocumentUploadResponse
+from app.models.alert import FraudAlert
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 logger = logging.getLogger(__name__)
 
 
-@router.get("/")
+@router.get("/", include_in_schema=False)
 async def list_documents(_=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR))):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
 
-@router.post("/")
+@router.post("/", include_in_schema=False)
 async def create_document(_=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR))):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
 
@@ -51,6 +53,7 @@ async def create_document(_=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERA
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
+    auto_archive: bool = Form(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
@@ -137,7 +140,7 @@ async def upload_document(
         
         from app.celery_app import process_document_task
         try:
-            task = process_document_task.delay(document_id)
+            task = process_document_task.delay(document_id, auto_archive=auto_archive)
             logger.info(f"✓ Celery task launched: task_id={task.id}")
         except Exception as e:
             logger.error(f"❌ Celery task launch error: {str(e)}", exc_info=True)
@@ -162,6 +165,7 @@ async def upload_document(
 async def upload_pdf(
     request: Request,
     file: UploadFile = File(...),
+    auto_archive: bool = Form(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
 ):
@@ -231,7 +235,7 @@ async def upload_pdf(
 
         from app.celery_app import process_document_task
 
-        process_task = process_document_task.delay(document_id)
+        process_task = process_document_task.delay(document_id, auto_archive=auto_archive)
 
         return JSONResponse({
             "status": "processing",
@@ -375,12 +379,16 @@ async def search_documents(
         # Execute MeiliSearch query
         logger.info(f"Searching MeiliSearch: q={q}, filters={filters}")
         result = search_service.search(q, search_params)
-        
+
         # Format response with relevance scores
         hits = result.get("hits", [])
         total_hits = result.get("estimatedTotalHits", 0)
         processing_time_ms = result.get("processingTimeMs", 0)
-        
+
+        # If MeiliSearch is empty and the query is unfiltered, fallback to PostgreSQL
+        if not hits and not q and not filters and offset == 0:
+            raise RuntimeError("MeiliSearch returned empty for unfiltered query")
+
         return JSONResponse({
             "status": "success",
             "source": "meilisearch",
@@ -423,6 +431,7 @@ async def search_documents(
                     Document.title.ilike(search_term),
                     Document.description.ilike(search_term),
                     Document.document_number.ilike(search_term),
+                    Document.invoice_number.ilike(search_term),
                 ]
                 if join_extracted:
                     text_filters.append(ExtractedData.field_value.ilike(search_term))
@@ -484,6 +493,7 @@ async def search_documents(
                     "tip_document": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),
                     "status": doc.status.value if hasattr(doc.status, "value") else str(doc.status),
                     "document_number": doc.document_number,
+                    "invoice_number": doc.invoice_number,
                     "amount": doc.amount,
                     "currency": doc.currency,
                     "data": doc.document_date.isoformat() if doc.document_date else None,
@@ -577,6 +587,31 @@ async def get_document(
                 }
         except Exception:
             pass
+    elif extracted_data_dict.get("cod_nomenclator"):
+        alternatives = []
+        raw_alternatives = extracted_data_dict.get("nomenclator_alternative")
+        if raw_alternatives:
+            try:
+                alternatives = json.loads(raw_alternatives)
+            except Exception:
+                alternatives = []
+
+        confidence_value = extracted_data_dict.get("nomenclator_confidence")
+        try:
+            confidence_value = float(confidence_value) if confidence_value is not None else 0.0
+        except (TypeError, ValueError):
+            confidence_value = 0.0
+
+        nomenclator_suggestion = {
+            "cod": extracted_data_dict.get("cod_nomenclator"),
+            "descriere": extracted_data_dict.get("nomenclator_rationale") or "AI nomenclator suggestion",
+            "incidenta": "0",
+            "confidence": confidence_value,
+            "dosar_propus": extracted_data_dict.get("dosar_propus"),
+            "termen_pastrare": extracted_data_dict.get("termen_pastrare"),
+            "nivel_confidentialitate": extracted_data_dict.get("nivel_confidentialitate"),
+            "alternative": alternatives,
+        }
 
     pages = [
         {
@@ -592,6 +627,7 @@ async def get_document(
     payload: dict[str, Any] = {
         "id": doc.id,
         "document_number": doc.document_number,
+        "invoice_number": doc.invoice_number,
         "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),
         "title": doc.title,
         "description": doc.description,
@@ -758,6 +794,25 @@ async def get_page_image(
         logger.error(f"Error getting page image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Could not retrieve page image: {str(e)}")
 
+@router.get("/{document_id}/alerts")
+async def get_document_alerts(
+    document_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+):
+    alerts = db.query(FraudAlert).filter(
+        FraudAlert.document_id == document_id,
+        FraudAlert.is_resolved == 0
+    ).all()
+    
+    return [{
+        "id": a.id,
+        "type": a.anomaly_type,
+        "score": a.fraud_score,
+        "risk": a.risk_level,
+        "description": a.description,
+        "detected_at": a.detected_at.isoformat()
+    } for a in alerts]
 
 @router.get("/{document_id}/related", response_model=RelatedDocumentsResponse)
 async def get_related_documents(
@@ -902,7 +957,7 @@ async def update_document(
         "updated_fields": sorted(changes.keys()),
     })
 
-@router.delete("/{document_id}")
+@router.delete("/{document_id}", include_in_schema=False)
 async def delete_document(document_id: int, _=Depends(require_roles(RBACRole.ADMIN))):
     return JSONResponse({"detail": "not implemented"}, status_code=501)
 
@@ -1012,10 +1067,10 @@ async def confirm_nomenclator(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    if doc.status != DocumentStatusEnum.ARCHIVED:
+    if doc.status != DocumentStatusEnum.REVIEW:
         raise HTTPException(
             status_code=400,
-            detail=f"Can only confirm nomenclator during ARCHIVED. Current status: {doc.status.value}",
+            detail=f"Can only confirm nomenclator during REVIEW. Current status: {doc.status.value}",
         )
 
     changes: dict[str, dict[str, object]] = {}
@@ -1112,10 +1167,10 @@ async def request_manual_correction(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    if doc.status not in [DocumentStatusEnum.REVIEW, DocumentStatusEnum.VALIDATED]:
+    if doc.status != DocumentStatusEnum.REVIEW:
         raise HTTPException(
             status_code=400,
-            detail=f"Can only request correction during REVIEW or VALIDATED. Current status: {doc.status.value}",
+            detail=f"Can only request correction during REVIEW. Current status: {doc.status.value}",
         )
 
     previous_status = doc.status
@@ -1164,17 +1219,26 @@ async def approve_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    if doc.status not in [DocumentStatusEnum.REVIEW, DocumentStatusEnum.VALIDATED]:
+    if doc.status != DocumentStatusEnum.REVIEW:
         raise HTTPException(
             status_code=400,
-            detail=f"Can only approve during REVIEW or VALIDATED. Current status: {doc.status.value}",
+            detail=f"Can only approve during REVIEW. Current status: {doc.status.value}",
+        )
+
+    if not doc.nomenclator_confirmed:
+        raise HTTPException(
+            status_code=400,
+            detail="Nomenclator must be confirmed before approval",
+        )
+
+    if not doc.nomenclator_id or not doc.dosar_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Nomenclator and dosar must be set before approval",
         )
 
     previous_status = doc.status
-    previous_archived_at = doc.archived_at
-    doc.status = DocumentStatusEnum.ARCHIVED
-    if not doc.archived_at:
-        doc.archived_at = datetime.utcnow()
+    doc.status = DocumentStatusEnum.APPROVED
     db.commit()
     db.refresh(doc)
 
@@ -1192,11 +1256,6 @@ async def approve_document(
             "to": serialize_audit_value(doc.status),
         }
     }
-    if previous_archived_at != doc.archived_at:
-        changes["archived_at"] = {
-            "from": serialize_audit_value(previous_archived_at),
-            "to": serialize_audit_value(doc.archived_at),
-        }
 
     log_audit_event(
         db=db,
@@ -1214,7 +1273,7 @@ async def approve_document(
         "status": "success",
         "document_id": doc.id,
         "new_status": doc.status.value,
-        "approved_at": doc.archived_at.isoformat() if doc.archived_at else None,
+        "approved_at": doc.updated_at.isoformat() if doc.updated_at else None,
     })
 
 
@@ -1231,10 +1290,10 @@ async def return_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    if doc.status not in [DocumentStatusEnum.REVIEW, DocumentStatusEnum.VALIDATED]:
+    if doc.status != DocumentStatusEnum.REVIEW:
         raise HTTPException(
             status_code=400,
-            detail=f"Can only return during REVIEW or VALIDATED. Current status: {doc.status.value}",
+            detail=f"Can only return during REVIEW. Current status: {doc.status.value}",
         )
 
     previous_status = doc.status
@@ -1268,6 +1327,72 @@ async def return_document(
         "document_id": doc.id,
         "new_status": doc.status.value,
         "reason": payload.reason,
+    })
+
+
+@router.post("/{document_id}/archive")
+async def archive_document(
+    document_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR)),
+):
+    """Archive an approved document."""
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.status != DocumentStatusEnum.APPROVED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only archive during APPROVED. Current status: {doc.status.value}",
+        )
+
+    previous_status = doc.status
+    previous_archived_at = doc.archived_at
+    doc.status = DocumentStatusEnum.ARCHIVED
+    if not doc.archived_at:
+        doc.archived_at = datetime.utcnow()
+    db.commit()
+    db.refresh(doc)
+
+    try:
+        search_svc = SearchService()
+        prepared_doc = search_svc.prepare_document_for_indexing(doc)
+        search_svc.add_documents([prepared_doc])
+        logger.info("✓ MeiliSearch updated for doc %s", doc.id)
+    except Exception as e:
+        logger.warning("Failed to update MeiliSearch: %s", str(e))
+
+    changes = {
+        "status": {
+            "from": serialize_audit_value(previous_status),
+            "to": serialize_audit_value(doc.status),
+        }
+    }
+    if previous_archived_at != doc.archived_at:
+        changes["archived_at"] = {
+            "from": serialize_audit_value(previous_archived_at),
+            "to": serialize_audit_value(doc.archived_at),
+        }
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action=AuditActionEnum.ARCHIVE,
+        resource_type="document",
+        resource_id=doc.id,
+        document_id=doc.id,
+        description="Document archived",
+        changes=changes,
+        ip_address=get_request_ip(request),
+    )
+
+    return JSONResponse({
+        "status": "success",
+        "document_id": doc.id,
+        "new_status": doc.status.value,
+        "archived_at": doc.archived_at.isoformat() if doc.archived_at else None,
     })
 
 

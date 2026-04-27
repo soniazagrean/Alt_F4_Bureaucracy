@@ -93,6 +93,7 @@ class DocumentCorrectionRequest(BaseModel):
 class DocumentResponse(BaseModel):
     id: int
     document_number: str
+    invoice_number: Optional[str] = None
     document_type: DocumentTypeEnum
     title: str
     status: DocumentStatusEnum

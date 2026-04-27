@@ -108,6 +108,20 @@ def _render_archive_node(node: dict, search_query: str, selected_dosar_id: str, 
             _render_archive_node(child, search_query, selected_dosar_id, level + 1)
 
 
+def _collect_dosare(node: dict) -> list[dict]:
+    dosare = list(node.get("dosare", []) or [])
+    for child in node.get("children", []) or []:
+        dosare.extend(_collect_dosare(child))
+    return dosare
+
+
+def _flatten_dosare_from_tree(roots: list[dict]) -> list[dict]:
+    all_dosare: list[dict] = []
+    for root in roots or []:
+        all_dosare.extend(_collect_dosare(root))
+    return all_dosare
+
+
 def _node_has_matching_content(node: dict, query: str) -> bool:
     if not query:
         return True
@@ -151,8 +165,8 @@ def _filter_documents(documents: list[dict], year: str, supplier: str, doc_type:
 
 def _format_relation_label(relation_type: str) -> str:
     labels = {
-        "same_dosar": "Același dosar",
-        "same_furnizor": "Același furnizor",
+        "same_dosar": "Same folder",
+        "same_furnizor": "Same supplier",
     }
     return labels.get(relation_type, relation_type.replace("_", " ").title())
 
@@ -213,6 +227,8 @@ if st.session_state.auth_token:
     # Initialize session state for search results and archive browsing
     if "search_results" not in st.session_state:
         st.session_state.search_results = None
+    if "search_autoloaded" not in st.session_state:
+        st.session_state.search_autoloaded = False
     if "selected_doc_id" not in st.session_state:
         st.session_state.selected_doc_id = None
     if "archive_tree" not in st.session_state:
@@ -224,6 +240,26 @@ if st.session_state.auth_token:
     
     st.divider()
     
+    # Auto-load recent documents for first visit
+    if not st.session_state.search_results and not st.session_state.search_autoloaded:
+        try:
+            recent_params = {
+                "limit": 20,
+                "offset": 0,
+            }
+            recent_response = requests.get(
+                f"{API_BASE_URL}/documents/search",
+                headers=headers,
+                params=recent_params,
+                timeout=10,
+            )
+            if recent_response.status_code == 200:
+                st.session_state.search_results = recent_response.json()
+        except Exception:
+            pass
+        finally:
+            st.session_state.search_autoloaded = True
+
     # Show detail view or search based on state
     if st.session_state.selected_doc_id:
         # DETAIL VIEW
@@ -287,7 +323,7 @@ if st.session_state.auth_token:
                 preview_col, meta_col = st.columns([1.1, 1.9])
 
                 with preview_col:
-                    st.markdown("### Preview rapid")
+                    st.markdown("### Quick Preview")
                     preview_url = doc.get("preview_url")
                     mime_type = doc.get("mime_type") or ""
                     if preview_url and "pdf" in mime_type.lower():
@@ -327,11 +363,12 @@ if st.session_state.auth_token:
                             st.info("Preview not available yet (processing in progress).")
 
                 with meta_col:
-                    st.markdown("### Metadata & workflow")
+                    st.markdown("### Metadata & Workflow")
 
                     meta_left, meta_right = st.columns(2)
                     with meta_left:
-                        st.metric("Document Number", doc.get("document_number", "N/A"))
+                        st.metric("Invoice Number (extracted)", doc.get("invoice_number", "N/A"))
+                        st.metric("Document Number (internal)", doc.get("document_number", "N/A"))
                         st.metric("Document Date", doc.get("document_date", "N/A"))
 
                     with meta_right:
@@ -348,6 +385,27 @@ if st.session_state.auth_token:
                         """,
                         unsafe_allow_html=True,
                     )
+
+                    st.markdown("---")
+                    st.markdown("#### 🔍 Forensics & Fraud Analysis")
+                    
+                    f_score = doc.get("fraud_score", 0.0) or 0.0
+                    st.progress(f_score, text=f"Overall Fraud Score: {f_score*100:.1f}%")
+
+                    try:
+                        alert_resp = requests.get(f"{API_BASE_URL}/documents/{doc_id}/alerts", headers=headers)
+                        if alert_resp.status_code == 200:
+                            alerts = alert_resp.json()
+                            if alerts:
+                                for alert in alerts:
+                                    # Folosim un expander roșu pentru alerte critice
+                                    with st.expander(f"⚠️ Anomaly: {alert['anomaly_type']}", expanded=True):
+                                        st.write(f"**Description:** {alert['description']}")
+                                        st.write(f"**Risk Level:** {alert['risk_level'].upper()}")
+                            else:
+                                st.success("No suspicious anomalies detected.")
+                    except:
+                        st.caption("Alerts service is currently down.")
 
                     if doc_id:
                         try:
@@ -369,7 +427,7 @@ if st.session_state.auth_token:
                         except Exception as e:
                             st.warning(f"Could not download PDF: {str(e)}")
 
-                    st.markdown("#### Cale arhiva sugerata")
+                    st.markdown("#### Suggested Archive Path")
                     archive_hint = None
                     dosar_id = doc.get("dosar_id")
                     if dosar_id:
@@ -415,12 +473,110 @@ if st.session_state.auth_token:
                     if archive_hint:
                         st.code(archive_hint, language=None)
                     else:
-                        st.info("Nu exista inca o sugestie de arhivare.")
+                        st.info("No archive suggestion available yet.")
 
-                    st.markdown("#### Workflow operator")
+                    st.markdown("#### Operator Workflow")
                     nomenclator_confirmed = doc.get("nomenclator_confirmed", False)
-                    if status_upper in ["REVIEW", "VALIDATED"]:
-                        if st.button("✅ Approve Document", use_container_width=True, type="primary"):
+                    if status_upper == "REVIEW":
+                        if "archive_tree_cache" not in st.session_state:
+                            st.session_state.archive_tree_cache = None
+
+                        st.markdown("**Step 1: Confirm nomenclator/folder**")
+                        refresh_archive = st.button(
+                            "Refresh archive list",
+                            use_container_width=True,
+                            key=f"refresh_archive_{doc_id}",
+                        )
+                        if refresh_archive or st.session_state.archive_tree_cache is None:
+                            try:
+                                tree_response = requests.get(
+                                    f"{API_BASE_URL}/archive/tree",
+                                    headers=headers,
+                                    timeout=10,
+                                )
+                                if tree_response.status_code == 200:
+                                    st.session_state.archive_tree_cache = tree_response.json()
+                                else:
+                                    st.warning("Archive tree could not be loaded.")
+                                    st.session_state.archive_tree_cache = None
+                            except Exception:
+                                st.session_state.archive_tree_cache = None
+
+                        dosare_options = []
+                        archive_tree = st.session_state.archive_tree_cache or {}
+                        roots = archive_tree.get("roots", [])
+                        if roots:
+                            dosare_options = _flatten_dosare_from_tree(roots)
+
+                        selected_dosar = None
+                        if dosare_options:
+                            labels = [_format_dosar_label(dosar) for dosar in dosare_options]
+                            default_index = 0
+                            current_dosar_id = doc.get("dosar_id")
+                            if current_dosar_id:
+                                for idx, dosar in enumerate(dosare_options):
+                                    if str(dosar.get("id")) == str(current_dosar_id):
+                                        default_index = idx
+                                        break
+                            selected_label = st.selectbox(
+                                "Suggested / Selected Folder",
+                                labels,
+                                index=default_index,
+                                key=f"dosar_select_{doc_id}",
+                            )
+                            for dosar, label in zip(dosare_options, labels):
+                                if label == selected_label:
+                                    selected_dosar = dosar
+                                    break
+                        else:
+                            st.info("No folders available. Create one in Archive Browser.")
+
+                        if not nomenclator_confirmed:
+                            confirm_payload = {"confirmed": True}
+                            if selected_dosar:
+                                confirm_payload["dosar_id"] = selected_dosar.get("id")
+                                confirm_payload["nomenclator_id"] = selected_dosar.get("nomenclator_id")
+                            elif doc.get("dosar_id") and doc.get("nomenclator_id"):
+                                confirm_payload["dosar_id"] = doc.get("dosar_id")
+                                confirm_payload["nomenclator_id"] = doc.get("nomenclator_id")
+
+                            confirm_disabled = not (
+                                confirm_payload.get("dosar_id") and confirm_payload.get("nomenclator_id")
+                            )
+
+                            if st.button(
+                                "✓ Confirm Nomenclator",
+                                use_container_width=True,
+                                type="primary",
+                                disabled=confirm_disabled,
+                            ):
+                                try:
+                                    confirm_response = requests.post(
+                                        f"{API_BASE_URL}/documents/{doc_id}/confirm-nomenclator",
+                                        headers=headers,
+                                        json=confirm_payload,
+                                        timeout=10,
+                                    )
+                                    if confirm_response.status_code in [200, 202]:
+                                        st.success("Nomenclator confirmed!")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Confirmation failed: {confirm_response.status_code}")
+                                except Exception as e:
+                                    st.error(f"Error: {str(e)}")
+                            if confirm_disabled:
+                                st.caption("Select a folder to confirm.")
+                        else:
+                            st.success("✅ Nomenclator confirmed.")
+
+                        st.markdown("---")
+                        st.markdown("**Step 2: Approve / Return**")
+                        if st.button(
+                            "✅ Approve Document",
+                            use_container_width=True,
+                            type="primary",
+                            disabled=not nomenclator_confirmed,
+                        ):
                             try:
                                 approve_response = requests.post(
                                     f"{API_BASE_URL}/documents/{doc_id}/approve",
@@ -428,14 +584,13 @@ if st.session_state.auth_token:
                                     timeout=10,
                                 )
                                 if approve_response.status_code in [200, 202]:
-                                    st.success("Document approved and moved to Archive!")
+                                    st.success("Document approved!")
                                     st.rerun()
                                 else:
                                     st.error(f"Approve failed: {approve_response.status_code}")
                             except Exception as e:
                                 st.error(f"Error: {str(e)}")
 
-                        st.markdown("---")
                         correction_reason = st.text_area(
                             "Correction Reason (optional)",
                             key=f"correction_reason_{doc_id}",
@@ -459,27 +614,34 @@ if st.session_state.auth_token:
                             except Exception as e:
                                 st.error(f"Error: {str(e)}")
 
-                    # STEP 2: Archive Audit (Available ONLY after approval, as per QA 2.8)
+                    elif status_upper == "APPROVED":
+                        if st.button("📦 Archive Document", use_container_width=True, type="primary"):
+                            try:
+                                archive_response = requests.post(
+                                    f"{API_BASE_URL}/documents/{doc_id}/archive",
+                                    headers=headers,
+                                    timeout=10,
+                                )
+                                if archive_response.status_code in [200, 202]:
+                                    st.success("Document archived!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Archive failed: {archive_response.status_code}")
+                            except Exception as e:
+                                st.error(f"Error: {str(e)}")
+
                     elif status_upper == "ARCHIVED":
+                        st.success("✅ Document archived.")
                         if not nomenclator_confirmed:
-                            st.info("This document is archived but needs Nomenclator confirmation.")
-                            if st.button("✓ Confirm Nomenclator", use_container_width=True, type="primary"):
-                                try:
-                                    confirm_response = requests.post(
-                                        f"{API_BASE_URL}/documents/{doc_id}/confirm-nomenclator",
-                                        headers=headers,
-                                        json={"confirmed": True},
-                                        timeout=10,
-                                    )
-                                    if confirm_response.status_code in [200, 202]:
-                                        st.success("Nomenclator confirmed!")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Confirmation failed: {confirm_response.status_code}")
-                                except Exception as e:
-                                    st.error(f"Error: {str(e)}")
+                            st.info("Nomenclator is not confirmed.")
                         else:
-                            st.success("✅ Nomenclator confirmed for this archived document.")
+                            st.success("✅ Nomenclator confirmed.")
+
+                    elif status_upper == "RETURNED":
+                        st.info(
+                            "Document returned for correction. Update fields via the API (PUT /documents/{id}) "
+                            "and the status will return to REVIEW."
+                        )
 
                     else:
                         st.info(f"Current status: {status_upper}. No operator actions available.")
@@ -601,54 +763,54 @@ if st.session_state.auth_token:
                 # ============================================================================
                 
                 if isinstance(extracted, dict) or isinstance(classification, dict):
-                    st.markdown("### Informații Extrase")
+                    st.markdown("### Extracted Information")
                     
                     # Panel 1: Invoice Data Extraction
-                    with st.expander("📋 Date Extrase Factură", expanded=True):
+                    with st.expander("📋 Extracted Invoice Data", expanded=True):
                         if isinstance(extracted, dict) and extracted:
                             col1, col2 = st.columns(2)
                             
                             with col1:
-                                st.write(f"**Numărul Facturii:** `{extracted.get('nr_factura', 'N/A')}`")
-                                st.write(f"**Furnizor:** {extracted.get('furnizor', 'N/A')}")
-                                st.write(f"**Cod Fiscal Furnizor:** {extracted.get('cod_fiscal', 'N/A')}")
-                                st.write(f"**Serie Factură:** {extracted.get('serie_factura', 'N/A')}")
+                                st.write(f"**Invoice Number:** `{extracted.get('nr_factura', 'N/A')}`")
+                                st.write(f"**Supplier:** {extracted.get('furnizor', 'N/A')}")
+                                st.write(f"**Supplier Tax ID:** {extracted.get('cod_fiscal', 'N/A')}")
+                                st.write(f"**Invoice Series:** {extracted.get('serie_factura', 'N/A')}")
                             
                             with col2:
-                                st.write(f"**Data Facturii:** {extracted.get('data', 'N/A')}")
+                                st.write(f"**Invoice Date:** {extracted.get('data', 'N/A')}")
                                 st.write(f"**Total:** {extracted.get('total', 'N/A')}")
-                                st.write(f"**Monedă:** {extracted.get('moneda', 'RON')}")
-                                st.write(f"**Status Factură:** {extracted.get('status_factura', 'N/A')}")
+                                st.write(f"**Currency:** {extracted.get('moneda', 'RON')}")
+                                st.write(f"**Invoice Status:** {extracted.get('status_factura', 'N/A')}")
                             
                             # Additional invoice details
                             if extracted.get('descriere'):
-                                st.write(f"**Descriere:** {extracted.get('descriere')}")
+                                st.write(f"**Description:** {extracted.get('descriere')}")
                         else:
-                            st.info("Nu au fost extrase date de factură")
+                            st.info("No invoice data extracted.")
                     
                     # Panel 2: Document Classification
-                    with st.expander("🏷️ Clasificare Document"):
+                    with st.expander("🏷️ Document Classification"):
                         if isinstance(classification, dict) and classification:
                             col1, col2 = st.columns(2)
                             
                             with col1:
-                                st.write(f"**Tip Document:** {classification.get('tip_document', 'N/A')}")
-                                st.write(f"**Sub-tip:** {classification.get('subtip', 'N/A')}")
-                                st.write(f"**Categorie:** {classification.get('categorie', 'N/A')}")
+                                st.write(f"**Document Type:** {classification.get('tip_document', 'N/A')}")
+                                st.write(f"**Subtype:** {classification.get('subtip', 'N/A')}")
+                                st.write(f"**Category:** {classification.get('categorie', 'N/A')}")
                             
                             with col2:
                                 confidence = classification.get('confidence', 0)
                                 confidence = confidence if confidence is not None else 0
-                                st.metric("Încredere Clasificare", f"{confidence*100:.1f}%")
+                                st.metric("Classification Confidence", f"{confidence*100:.1f}%")
                                 st.write(f"**Model:** {classification.get('model', 'AI')}")
                             
                             if classification.get('caracteristici'):
-                                st.write(f"**Caracteristici:** {', '.join(classification.get('caracteristici', []))}")
+                                st.write(f"**Features:** {', '.join(classification.get('caracteristici', []))}")
                         else:
-                            st.info("Nu au fost completate date de clasificare")
+                            st.info("No classification data available.")
                     
                     # Panel 3: Nomenclator Suggestions
-                    with st.expander("💡 Sugestii Nomenclator"):
+                    with st.expander("💡 Nomenclator Suggestions"):
                         nomenclator_data = doc.get("nomenclator_suggestion") or {}
                         
                         if isinstance(nomenclator_data, dict) and nomenclator_data:
@@ -661,27 +823,27 @@ if st.session_state.auth_token:
                             suggested_dosar = nomenclator_data.get("dosar_propus") or nomenclator_data.get("dosar")
                             
                             with col1:
-                                st.write(f"**Cod Nomenclator Sugerat:** `{suggested_code or 'N/A'}`")
-                                st.write(f"**Descriere:** {nomenclator_data.get('descriere', 'N/A')}")
+                                st.write(f"**Suggested Nomenclator Code:** `{suggested_code or 'N/A'}`")
+                                st.write(f"**Description:** {nomenclator_data.get('descriere', 'N/A')}")
                                 if suggested_dosar:
-                                    st.write(f"**Dosar propus:** {suggested_dosar}")
-                                st.write(f"**Incidenţă (%):** {nomenclator_data.get('incidenta', '0')} %")
+                                    st.write(f"**Suggested Folder:** {suggested_dosar}")
+                                st.write(f"**Relevance (%):** {nomenclator_data.get('incidenta', '0')} %")
                             
                             with col2:
                                 confidence = nomenclator_data.get('confidence', 0)
                                 confidence = confidence if confidence is not None else 0
-                                st.metric("Încredere Sugestie", f"{confidence*100:.1f}%")
+                                st.metric("Suggestion Confidence", f"{confidence*100:.1f}%")
                             
                             # Alternate suggestions
                             alternatives = nomenclator_data.get('alternative', [])
                             if alternatives:
-                                st.write("**Alte Sugestii:**")
+                                st.write("**Other Suggestions:**")
                                 for alt in alternatives:
                                     alt_confidence = alt.get('confidence', 0)
                                     alt_confidence = alt_confidence if alt_confidence is not None else 0
                                     st.write(f"- `{alt.get('cod')}` - {alt.get('descriere')} ({alt_confidence*100:.1f}%)")
                         else:
-                            st.info("Nu sunt disponibile sugestii de nomenclator încă")
+                            st.info("No nomenclator suggestions yet.")
                     
                     st.divider()
 
@@ -689,19 +851,19 @@ if st.session_state.auth_token:
                 # RELATED DOCUMENTS (Neo4j)
                 # =========================================================================
 
-                st.markdown("### Documente înrudite")
+                st.markdown("### Related Documents")
                 related_filters = st.columns([2, 1, 1])
 
                 with related_filters[0]:
                     relation_filter = st.selectbox(
-                        "Tip relație",
-                        ["Toate", "Același dosar", "Același furnizor"],
+                        "Relation type",
+                        ["All", "Same folder", "Same supplier"],
                         key=f"related_filter_{doc_id}",
                     )
 
                 with related_filters[1]:
                     related_page_size = st.selectbox(
-                        "Rezultate/pagină",
+                        "Results per page",
                         [5, 10, 20],
                         index=1,
                         key=f"related_page_size_{doc_id}",
@@ -709,7 +871,7 @@ if st.session_state.auth_token:
 
                 with related_filters[2]:
                     related_page = st.number_input(
-                        "Pagina",
+                        "Page",
                         min_value=1,
                         value=1,
                         step=1,
@@ -717,14 +879,14 @@ if st.session_state.auth_token:
                     )
 
                 relation_type_map = {
-                    "Toate": None,
-                    "Același dosar": "same_dosar",
-                    "Același furnizor": "same_furnizor",
+                    "All": None,
+                    "Same folder": "same_dosar",
+                    "Same supplier": "same_furnizor",
                 }
                 relation_type = relation_type_map.get(relation_filter)
 
                 try:
-                    with st.spinner("Se încarcă documentele înrudite..."):
+                    with st.spinner("Loading related documents..."):
                         related_params = {
                             "page": int(related_page),
                             "page_size": int(related_page_size),
@@ -746,11 +908,11 @@ if st.session_state.auth_token:
                         total_pages = related_payload.get("total_pages", 0)
 
                         st.caption(
-                            f"Total: {total_related} · Pagina {related_payload.get('page', 1)} din {total_pages or 1}"
+                            f"Total: {total_related} · Page {related_payload.get('page', 1)} of {total_pages or 1}"
                         )
 
                         if not related_items:
-                            st.info("Nu există documente înrudite pentru criteriul selectat.")
+                            st.info("No related documents for the selected filter.")
                         else:
                             for related_doc in related_items:
                                 with st.container(border=True):
@@ -774,12 +936,12 @@ if st.session_state.auth_token:
 
                                         if related_doc.get("furnizor"):
                                             st.markdown(
-                                                f"<span class='meta-chip'>Furnizor: {related_doc.get('furnizor')}</span>",
+                                                f"<span class='meta-chip'>Supplier: {related_doc.get('furnizor')}</span>",
                                                 unsafe_allow_html=True,
                                             )
                                         if related_doc.get("dosar"):
                                             st.markdown(
-                                                f"<span class='meta-chip'>Dosar: {related_doc.get('dosar')}</span>",
+                                                f"<span class='meta-chip'>Folder: {related_doc.get('dosar')}</span>",
                                                 unsafe_allow_html=True,
                                             )
 
@@ -800,15 +962,15 @@ if st.session_state.auth_token:
                                             st.session_state.selected_doc_id = str(related_doc.get("id"))
                                             st.rerun()
                     elif related_response.status_code == 503:
-                        st.warning("Neo4j este indisponibil momentan. Încearcă mai târziu.")
+                        st.warning("Neo4j is temporarily unavailable. Please try again later.")
                     else:
                         st.warning(
-                            f"Nu s-au putut încărca documentele înrudite: {related_response.status_code}"
+                            f"Could not load related documents: {related_response.status_code}"
                         )
                 except requests.exceptions.ConnectionError:
-                    st.warning("Nu se poate comunica cu serviciul Neo4j momentan.")
+                    st.warning("Cannot reach the Neo4j service right now.")
                 except Exception as e:
-                    st.warning(f"Eroare la încărcarea documentelor înrudite: {str(e)}")
+                    st.warning(f"Error loading related documents: {str(e)}")
 
                 # Timeline
                 st.markdown("### Processing Timeline")
@@ -852,11 +1014,11 @@ if st.session_state.auth_token:
                                         with st.expander("Changes"):
                                             st.json(entry.get("changes"))
                         else:
-                            st.info("Nu exista inca evenimente de audit pentru acest document.")
+                            st.info("No audit events yet for this document.")
                     else:
-                        st.warning("Audit trail indisponibil momentan.")
+                        st.warning("Audit trail is currently unavailable.")
                 except Exception:
-                    st.warning("Audit trail indisponibil momentan.")
+                    st.warning("Audit trail is currently unavailable.")
                 
                 # Raw JSON (expandable)
                 with st.expander("Raw JSON Data"):
@@ -892,9 +1054,9 @@ if st.session_state.auth_token:
                 )
             with col3:
                 supplier_query = st.text_input(
-                    "Furnizor",
-                    placeholder="Nume furnizor",
-                    help="Filtrare după numele furnizorului (potrivit exact)"
+                    "Supplier",
+                    placeholder="Supplier name",
+                    help="Filter by supplier name (exact match)"
                 )
             with col4:
                 doc_status = st.selectbox(
@@ -976,6 +1138,10 @@ if st.session_state.auth_token:
                             status = doc.get("status", "N/A")
                             status_upper = str(status).upper()
                             doc_type = doc.get("tip_document", "N/A")
+                            f_val = doc.get("fraud_score", 0.0) or 0.0
+                            if f_val > 0.7 or status_upper == "RETURNED":
+                                alert_text = "🚨 High risk of fraud" if f_val > 0.7 else "↩ Returned for correction"
+                                st.markdown(f"<p style='color:#ff4b4b; font-weight:bold; margin-bottom:5px;'>{alert_text}</p>", unsafe_allow_html=True)
                             status_emoji = {
                                 "ARCHIVED": "📦",
                                 "APPROVED": "✅",
@@ -999,9 +1165,9 @@ if st.session_state.auth_token:
                                     st.session_state.selected_doc_id = str(doc_id)
                                     st.rerun()
                                 detail_bits = []
-                                doc_number = doc.get("nr_factura") or doc.get("document_number")
+                                doc_number = doc.get("invoice_number") or doc.get("nr_factura") or doc.get("document_number")
                                 if doc_number:
-                                    detail_bits.append(f"Nr: {doc_number}")
+                                    detail_bits.append(f"Invoice: {doc_number}")
                                 if doc.get("furnizor"):
                                     detail_bits.append(f"Furnizor: {doc.get('furnizor')}")
                                 if doc.get("data"):
@@ -1137,7 +1303,8 @@ if st.session_state.auth_token:
                             for doc in filtered_docs:
                                 with st.container(border=True):
                                     doc_cols = st.columns([4, 1, 1, 1])
-                                    doc_cols[0].markdown(f"**{doc.get('title', 'Untitled')}**\n- {doc.get('document_number', '')}")
+                                    archive_invoice_number = doc.get("invoice_number") or doc.get("document_number", "")
+                                    doc_cols[0].markdown(f"**{doc.get('title', 'Untitled')}**\n- {archive_invoice_number}")
                                     doc_cols[1].markdown(f"_{(doc.get('document_type') or '').upper()}_")
                                     doc_cols[2].markdown(f"{doc.get('status', 'N/A').upper()}")
                                     if doc_cols[3].button(

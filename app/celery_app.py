@@ -446,6 +446,7 @@ def process_document_task(self, document_id: int, auto_archive: bool = False):
     """Orchestrates the full NV-014 pipeline for a single document."""
     from app.models.document import Document, DocumentStatusEnum, DocumentPage, ExtractedData
     from app.services.document_classification import DocumentClassificationService
+    from app.services.contract_extraction import ContractExtractionService
     from app.services.invoice_extraction import InvoiceExtractionService
     from app.services.nomenclator_suggestion import NomenclatorSuggestionService
     from app.schemas_nomenclator import NomenclatorSuggestionRequest
@@ -563,9 +564,11 @@ def process_document_task(self, document_id: int, auto_archive: bool = False):
                 except Exception as audit_exc:
                     logger.warning("Failed to write classification audit log: %s", audit_exc)
 
-        # Extract invoice data
-        extractor = InvoiceExtractionService()
+        # Extract document data based on detected type
+        invoice_extractor = InvoiceExtractionService()
+        contract_extractor = ContractExtractionService()
         extracted_metadata = {}
+        doc_type_value = str(doc.document_type.value if hasattr(doc.document_type, "value") else doc.document_type).lower()
 
         for minio_page in minio_pages:
             bucket_name, object_name = minio_page.split("/", 1)
@@ -574,49 +577,92 @@ def process_document_task(self, document_id: int, auto_archive: bool = False):
             temp_files.append(page_local.name)
             storage.client.fget_object(bucket_name, object_name, page_local.name)
 
-            invoice_data, extract_errors, extract_confidence = extractor.extract_invoice_data(
-                page_local.name,
-                language="ro"
-            )
+            if doc_type_value == "contract":
+                contract_data, extract_errors, extract_confidence = contract_extractor.extract_contract_data(
+                    page_local.name,
+                    language="ro"
+                )
+                if contract_data:
+                    extracted_metadata = contract_data.dict()
+                    if contract_data.contract_value is not None:
+                        doc.amount = float(contract_data.contract_value)
+                    doc.currency = contract_data.currency or doc.currency or "RON"
 
-            if invoice_data:
-                extracted_metadata = invoice_data.dict()
-                # map some fields back to Document
-                doc.amount = float(invoice_data.total)
-                doc.currency = invoice_data.currency or "RON"
-
-                extracted_invoice_number = invoice_data.nr_factura
-                doc.invoice_number = extracted_invoice_number or doc.invoice_number
-                if extracted_invoice_number:
-                    duplicate_doc = (
-                        db.query(Document)
-                        .filter(
-                            Document.document_number == extracted_invoice_number,
-                            Document.id != document_id,
+                    contract_number = contract_data.contract_number
+                    if contract_number:
+                        duplicate_doc = (
+                            db.query(Document)
+                            .filter(
+                                Document.document_number == contract_number,
+                                Document.id != document_id,
+                            )
+                            .first()
                         )
-                        .first()
-                    )
-                    if duplicate_doc:
-                        logger.warning(
-                            "Duplicate extracted invoice number '%s' for document %s; keeping existing document_number '%s'",
-                            extracted_invoice_number,
-                            document_id,
-                            doc.document_number,
+                        if duplicate_doc:
+                            logger.warning(
+                                "Duplicate extracted contract number '%s' for document %s; keeping existing document_number '%s'",
+                                contract_number,
+                                document_id,
+                                doc.document_number,
+                            )
+                        else:
+                            doc.document_number = contract_number
+
+                    for key, value in extracted_metadata.items():
+                        db.add(ExtractedData(
+                            document_id=document_id,
+                            field_name=key,
+                            field_value=str(value),
+                            extraction_confidence=extract_confidence,
+                        ))
+
+                    doc.status = DocumentStatusEnum.VALIDATED
+                    db.commit()
+                    break
+            else:
+                invoice_data, extract_errors, extract_confidence = invoice_extractor.extract_invoice_data(
+                    page_local.name,
+                    language="ro"
+                )
+
+                if invoice_data:
+                    extracted_metadata = invoice_data.dict()
+                    # map some fields back to Document
+                    doc.amount = float(invoice_data.total)
+                    doc.currency = invoice_data.currency or "RON"
+
+                    extracted_invoice_number = invoice_data.nr_factura
+                    doc.invoice_number = extracted_invoice_number or doc.invoice_number
+                    if extracted_invoice_number:
+                        duplicate_doc = (
+                            db.query(Document)
+                            .filter(
+                                Document.document_number == extracted_invoice_number,
+                                Document.id != document_id,
+                            )
+                            .first()
                         )
-                    else:
-                        doc.document_number = extracted_invoice_number
+                        if duplicate_doc:
+                            logger.warning(
+                                "Duplicate extracted invoice number '%s' for document %s; keeping existing document_number '%s'",
+                                extracted_invoice_number,
+                                document_id,
+                                doc.document_number,
+                            )
+                        else:
+                            doc.document_number = extracted_invoice_number
 
-                for key, value in extracted_metadata.items():
-                    db.add(ExtractedData(
-                        document_id=document_id,
-                        field_name=key,
-                        field_value=str(value),
-                        extraction_confidence=extract_confidence,
-                    ))
+                    for key, value in extracted_metadata.items():
+                        db.add(ExtractedData(
+                            document_id=document_id,
+                            field_name=key,
+                            field_value=str(value),
+                            extraction_confidence=extract_confidence,
+                        ))
 
-                doc.status = DocumentStatusEnum.VALIDATED
-                db.commit()
-                break
+                    doc.status = DocumentStatusEnum.VALIDATED
+                    db.commit()
+                    break
 
         # Nomenclator suggestion
         nomenclator_service = NomenclatorSuggestionService()

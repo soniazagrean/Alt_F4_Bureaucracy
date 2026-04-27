@@ -364,10 +364,39 @@ if st.session_state.auth_token:
 
                 with meta_col:
                     st.markdown("### Metadata & Workflow")
+                    doc_type_value = str(doc.get("document_type", "")).lower()
+                    extracted_map = doc.get("extracted_data_map") or {}
+
+                    if doc_type_value == "invoice":
+                        number_label = "Invoice Number (extracted)"
+                        number_value = doc.get("invoice_number") or extracted_map.get("nr_factura") or "N/A"
+                    elif doc_type_value == "contract":
+                        number_label = "Contract Number (extracted)"
+                        number_value = (
+                            extracted_map.get("contract_number")
+                            or extracted_map.get("nr_contract")
+                            or extracted_map.get("numar_contract")
+                            or "N/A"
+                        )
+                    elif doc_type_value == "report":
+                        number_label = "Report Number (extracted)"
+                        number_value = (
+                            extracted_map.get("report_number")
+                            or extracted_map.get("nr_raport")
+                            or extracted_map.get("numar_raport")
+                            or "N/A"
+                        )
+                    else:
+                        number_label = "Document Number (extracted)"
+                        number_value = (
+                            extracted_map.get("document_number")
+                            or extracted_map.get("numar_document")
+                            or "N/A"
+                        )
 
                     meta_left, meta_right = st.columns(2)
                     with meta_left:
-                        st.metric("Invoice Number (extracted)", doc.get("invoice_number", "N/A"))
+                        st.metric(number_label, number_value)
                         st.metric("Document Number (internal)", doc.get("document_number", "N/A"))
                         st.metric("Document Date", doc.get("document_date", "N/A"))
 

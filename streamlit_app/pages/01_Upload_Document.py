@@ -231,6 +231,35 @@ if st.session_state.auth_token:
                             # Document details
                             with details_placeholder.container():
                                 st.markdown("### 📋 Document Details")
+                                doc_type_value = str(doc.get("document_type", "")).lower()
+                                extracted_map = doc.get("extracted_data_map") or {}
+
+                                if doc_type_value == "invoice":
+                                    number_label = "Invoice Number (extracted)"
+                                    number_value = doc.get("invoice_number") or extracted_map.get("nr_factura") or "N/A"
+                                elif doc_type_value == "contract":
+                                    number_label = "Contract Number (extracted)"
+                                    number_value = (
+                                        extracted_map.get("contract_number")
+                                        or extracted_map.get("nr_contract")
+                                        or extracted_map.get("numar_contract")
+                                        or "N/A"
+                                    )
+                                elif doc_type_value == "report":
+                                    number_label = "Report Number (extracted)"
+                                    number_value = (
+                                        extracted_map.get("report_number")
+                                        or extracted_map.get("nr_raport")
+                                        or extracted_map.get("numar_raport")
+                                        or "N/A"
+                                    )
+                                else:
+                                    number_label = "Document Number (extracted)"
+                                    number_value = (
+                                        extracted_map.get("document_number")
+                                        or extracted_map.get("numar_document")
+                                        or "N/A"
+                                    )
                                 
                                 detail_cols = st.columns(3)
                                 
@@ -239,7 +268,7 @@ if st.session_state.auth_token:
                                     st.write(f"**Type:** {doc.get('document_type', 'N/A')}")
                                 
                                 with detail_cols[1]:
-                                    st.write(f"**Invoice Number (extracted):** {doc.get('invoice_number') or 'N/A'}")
+                                    st.write(f"**{number_label}:** {number_value}")
                                     st.write(f"**Document Number (internal):** {doc.get('document_number', 'N/A')}")
                                     st.write(f"**Amount:** {doc.get('amount', 'N/A')} {doc.get('currency', '')}")
                                 

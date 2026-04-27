@@ -151,6 +151,24 @@ class DosarResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class ArchiveStatus(str, Enum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+class ArchiveRead(DosarResponse):
+    """Schema for the list view in the Archive Browser"""
+    description: Optional[str] = None
+    status: ArchiveStatus
+    nomenclator_code: Optional[str]
+    nomenclator_name: Optional[str]
+    is_active: bool
+    documents_count: int
+    updated_at: Optional[datetime]
+    archived_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
 # Audit Schemas
 class AuditActionEnum(str, Enum):
     CREATE = "create"

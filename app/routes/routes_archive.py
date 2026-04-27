@@ -46,7 +46,7 @@ def _serialize_dosar_summary(dosar: Dosar) -> dict[str, Any]:
         "nomenclator_code": dosar.nomenclator.code if dosar.nomenclator else None,
         "nomenclator_name": dosar.nomenclator.name if dosar.nomenclator else None,
         "termen_pastrare": dosar.termen_pastrare.value if hasattr(dosar.termen_pastrare, "value") else str(dosar.termen_pastrare),
-        "is_active": bool(dosar.is_active),
+        "status": "active" if dosar.is_active == 1 else "archived", 
         "created_at": dosar.created_at.isoformat() if dosar.created_at else None,
         "updated_at": dosar.updated_at.isoformat() if dosar.updated_at else None,
         "archived_at": dosar.archived_at.isoformat() if dosar.archived_at else None,

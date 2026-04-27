@@ -85,28 +85,27 @@ def _dosar_matches_search(dosar: dict, query: str) -> bool:
     return query.lower() in text.lower()
 
 
-def _render_archive_node(node: dict, search_query: str, selected_dosar_id: str):
-    label = f"{node.get('code', 'N/A')} — {node.get('name', 'Unnamed Category')}"
-    with st.expander(label, expanded=False):
-        child_matches = []
-        for child in node.get("children", []):
-            if _node_has_matching_content(child, search_query):
-                _render_archive_node(child, search_query, selected_dosar_id)
-                child_matches.append(child)
+def _render_archive_node(node: dict, search_query: str, selected_dosar_id: str, level=0):
+    indent = "&nbsp;" * (level * 8)
+    label = f"📁 {node.get('code', 'N/A')} — {node.get('name', 'Unnamed Category')}"
+    
+    st.markdown(f"{indent}**{label}**", unsafe_allow_html=True)
+    
+    dosare = [dosar for dosar in node.get("dosare", []) if _dosar_matches_search(dosar, search_query)]
+    if dosare:
+        for dosar in dosare:
+            dosar_label = _format_dosar_label(dosar)
+            cols = st.columns([0.1, 4.9, 1])
+            with cols[1]:
+                st.markdown(f"{indent}&nbsp;&nbsp;&nbsp;&nbsp;📄 {dosar_label}", unsafe_allow_html=True)
+            if cols[2].button("Open folder", key=f"open_dosar_{dosar['id']}"):
+                st.session_state.selected_dosar_id = str(dosar["id"])
+                st.session_state.archive_dosar_details = None
+                st.rerun()
 
-        dosare = [dosar for dosar in node.get("dosare", []) if _dosar_matches_search(dosar, search_query)]
-        if dosare:
-            for dosar in dosare:
-                dosar_label = _format_dosar_label(dosar)
-                cols = st.columns([5, 1])
-                cols[0].markdown(f"**{dosar_label}**")
-                if cols[1].button("Open folder", key=f"open_dosar_{dosar['id']}"):
-                    st.session_state.selected_dosar_id = str(dosar["id"])
-                    st.session_state.archive_dosar_details = None
-                    st.rerun()
-
-        if not child_matches and not dosare:
-            st.write("*No matching archive folders or dossiers in this category.*")
+    for child in node.get("children", []):
+        if _node_has_matching_content(child, search_query):
+            _render_archive_node(child, search_query, selected_dosar_id, level + 1)
 
 
 def _node_has_matching_content(node: dict, query: str) -> bool:
@@ -420,53 +419,31 @@ if st.session_state.auth_token:
 
                     st.markdown("#### Workflow operator")
                     nomenclator_confirmed = doc.get("nomenclator_confirmed", False)
-                    if status_upper == "REVIEW":
-                        action_cols = st.columns([1, 1])
+                    if status_upper in ["REVIEW", "VALIDATED"]:
+                        if st.button("✅ Approve Document", use_container_width=True, type="primary"):
+                            try:
+                                approve_response = requests.post(
+                                    f"{API_BASE_URL}/documents/{doc_id}/approve",
+                                    headers=headers,
+                                    timeout=10,
+                                )
+                                if approve_response.status_code in [200, 202]:
+                                    st.success("Document approved and moved to Archive!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Approve failed: {approve_response.status_code}")
+                            except Exception as e:
+                                st.error(f"Error: {str(e)}")
 
-                        with action_cols[0]:
-                            if not nomenclator_confirmed:
-                                if st.button("✓ Confirma nomenclator", use_container_width=True, type="primary"):
-                                    try:
-                                        confirm_response = requests.post(
-                                            f"{API_BASE_URL}/documents/{doc_id}/confirm-nomenclator",
-                                            headers=headers,
-                                            json={"confirmed": True},
-                                            timeout=10,
-                                        )
-                                        if confirm_response.status_code in [200, 202]:
-                                            st.success("Nomenclator confirmat!")
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Confirmation failed: {confirm_response.status_code}")
-                                    except Exception as e:
-                                        st.error(f"Error: {str(e)}")
-                            else:
-                                st.success("Nomenclator confirmat")
-
-                        with action_cols[1]:
-                            if st.button("✅ Aproba document", use_container_width=True):
-                                try:
-                                    approve_response = requests.post(
-                                        f"{API_BASE_URL}/documents/{doc_id}/approve",
-                                        headers=headers,
-                                        timeout=10,
-                                    )
-                                    if approve_response.status_code in [200, 202]:
-                                        st.success("Document aprobat!")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Approve failed: {approve_response.status_code}")
-                                except Exception as e:
-                                    st.error(f"Error: {str(e)}")
-
+                        st.markdown("---")
                         correction_reason = st.text_area(
-                            "Motiv corectie (optional)",
+                            "Correction Reason (optional)",
                             key=f"correction_reason_{doc_id}",
                             height=90,
-                            placeholder="Ex: lipsesc date din factura sau suma nu corespunde.",
+                            placeholder="e.g., missing data or incorrect amount.",
                         )
 
-                        if st.button("↩️ Trimite la corectie", use_container_width=True):
+                        if st.button("↩️ Send to Correction", use_container_width=True):
                             try:
                                 correction_response = requests.post(
                                     f"{API_BASE_URL}/documents/{doc_id}/request-manual-correction",
@@ -475,14 +452,37 @@ if st.session_state.auth_token:
                                     timeout=10,
                                 )
                                 if correction_response.status_code in [200, 202]:
-                                    st.success("Document trimis la corectie!")
+                                    st.success("Document sent back for correction!")
                                     st.rerun()
                                 else:
                                     st.error(f"Correction failed: {correction_response.status_code}")
                             except Exception as e:
                                 st.error(f"Error: {str(e)}")
+
+                    # STEP 2: Archive Audit (Available ONLY after approval, as per QA 2.8)
+                    elif status_upper == "ARCHIVED":
+                        if not nomenclator_confirmed:
+                            st.info("This document is archived but needs Nomenclator confirmation.")
+                            if st.button("✓ Confirm Nomenclator", use_container_width=True, type="primary"):
+                                try:
+                                    confirm_response = requests.post(
+                                        f"{API_BASE_URL}/documents/{doc_id}/confirm-nomenclator",
+                                        headers=headers,
+                                        json={"confirmed": True},
+                                        timeout=10,
+                                    )
+                                    if confirm_response.status_code in [200, 202]:
+                                        st.success("Nomenclator confirmed!")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Confirmation failed: {confirm_response.status_code}")
+                                except Exception as e:
+                                    st.error(f"Error: {str(e)}")
+                        else:
+                            st.success("✅ Nomenclator confirmed for this archived document.")
+
                     else:
-                        st.info("Actiunile operatorului sunt disponibile doar in status REVIEW.")
+                        st.info(f"Current status: {status_upper}. No operator actions available.")
                 
                 # Show full page previews
                 pages = doc.get("pages", [])

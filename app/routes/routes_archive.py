@@ -153,16 +153,23 @@ async def get_archive_tree(
     db: Session = Depends(get_db),
     _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
 ):
-    nomenclator_entries = db.query(NomenclatorEntry).all()
+    if include_inactive:
+        nomenclator_entries = db.query(NomenclatorEntry).all()
+    else:
+        nomenclator_entries = db.query(NomenclatorEntry).filter(NomenclatorEntry.is_active == 1).all()
 
     dosare_query = db.query(Dosar)
     if not include_inactive:
         dosare_query = dosare_query.filter(Dosar.is_active == 1)
     dosare = dosare_query.all()
 
+    root_entry = next((entry for entry in nomenclator_entries if entry.code == "ROOT"), None)
     entries_by_parent: dict[Optional[int], list[NomenclatorEntry]] = {}
     for entry in nomenclator_entries:
-        entries_by_parent.setdefault(entry.parent_id, []).append(entry)
+        parent_id = entry.parent_id
+        if parent_id is None and entry.code != "ROOT" and root_entry:
+            parent_id = root_entry.id
+        entries_by_parent.setdefault(parent_id, []).append(entry)
 
     dosare_by_nomenclator: dict[int, list[dict[str, Any]]] = {}
     for dosar in dosare:

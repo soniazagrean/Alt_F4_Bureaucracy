@@ -28,52 +28,26 @@ class NomenclatorSuggestionService:
     ROMANIAN STANDARD NOMENCLATOR (I-VII Classification System)
     ============================================================
     
-    I. ADMINISTRATIVE AND ORGANIZATIONAL DOCUMENTS
-       I.1 - Company Structure and Governance
-       I.2 - Internal Regulations and Policies
-       I.3 - Meeting Minutes and Decisions
-       I.4 - Organizational Procedures
+    I. Administrative and Management Documents
+       I.1 - Decisions, resolutions, internal regulations, annual reports
     
-    II. FINANCIAL DOCUMENTS AND RECORDS
-        II.1 - Invoices and Billing Documents
-        II.2 - Financial Statements and Reports
-        II.3 - Tax Records and Declarations
-        II.4 - Bank Statements and Payments
-        II.5 - Accounting Records
+    II. Personnel Documents
+        II.1 - Personnel files, job descriptions, staffing tables, individual employment contracts
     
-    III. HUMAN RESOURCES AND EMPLOYMENT
-         III.1 - Employment Contracts
-         III.2 - Personnel Records
-         III.3 - Payroll and Compensation
-         III.4 - Training and Development
-         III.5 - Performance Reviews
+    III. Financial and Accounting Documents
+         III.1 - Execution accounts, balance sheets, accounting notes, invoices, payment orders, bank statements
     
-    IV. LEGAL AND COMPLIANCE DOCUMENTS
-        IV.1 - Contracts and Agreements
-        IV.2 - Legal Correspondence
-        IV.3 - Compliance Reports
-        IV.4 - Regulatory Filings
-        IV.5 - Certificates and Licenses
+    IV. Fixed Assets and Materials Documents
+        IV.1 - Inventory lists, disposal reports, warehouse records
     
-    V. OPERATIONAL AND TECHNICAL DOCUMENTS
-       V.1 - Technical Specifications
-       V.2 - Project Documentation
-       V.3 - Maintenance Records
-       V.4 - Equipment Inventory
-       V.5 - Standard Operating Procedures
+    V. Educational Activity Documents
+       V.1 - Curriculum plans, timetables, catalogs, register books
     
-    VI. CORRESPONDENCE AND COMMUNICATIONS
-        VI.1 - Internal Correspondence
-        VI.2 - External Communications
-        VI.3 - Email Archives
-        VI.4 - Meeting Records
-        VI.5 - Notifications
+    VI. Correspondence
+        VI.1 - Current institutional correspondence
     
-    VII. ARCHIVE AND GENERAL DOCUMENTS
-         VII.1 - Reports and Studies
-         VII.2 - Historical Records
-         VII.3 - General Correspondence
-         VII.4 - Miscellaneous Documents
+    VII. Other Documents
+         VII.1 - Register books, special regime forms, other documents
     """
     
     PRESERVATION_GUIDE = """

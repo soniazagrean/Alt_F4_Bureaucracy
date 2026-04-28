@@ -85,6 +85,9 @@ class NomenclatorConfirmationRequest(BaseModel):
     confirmed: bool = True
     nomenclator_id: Optional[int] = None
     dosar_id: Optional[int] = None
+    create_dosar_from_suggestion: bool = False
+    suggested_nomenclator_code: Optional[str] = None
+    suggested_dosar_title: Optional[str] = None
 
 
 class DocumentCorrectionRequest(BaseModel):

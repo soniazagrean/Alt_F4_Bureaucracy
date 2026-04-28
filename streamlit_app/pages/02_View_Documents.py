@@ -68,8 +68,11 @@ st.markdown(
 
 def _format_dosar_label(dosar: dict) -> str:
     code = dosar.get("nomenclator_code") or dosar.get("nomenclator_name") or "Unknown"
-    number = dosar.get("dosar_number") or "N/A"
     title = dosar.get("title") or "Untitled"
+    if dosar.get("is_suggestion"):
+        return f"{code} / {title} (Create suggested folder)"
+
+    number = dosar.get("dosar_number") or "N/A"
     count = dosar.get("documents_count", 0)
     return f"{code} / {number} · {title} ({count} docs)"
 
@@ -458,6 +461,8 @@ if st.session_state.auth_token:
 
                     st.markdown("#### Suggested Archive Path")
                     archive_hint = None
+                    suggested_dosar = None
+                    suggested_code = None
                     dosar_id = doc.get("dosar_id")
                     if dosar_id:
                         try:
@@ -498,6 +503,19 @@ if st.session_state.auth_token:
                             archive_hint = " / ".join(
                                 [part for part in [suggested_code, suggested_dosar] if part]
                             )
+                    else:
+                        nomenclator_suggestion = doc.get("nomenclator_suggestion") or {}
+                        suggested_dosar = (
+                            nomenclator_suggestion.get("dosar_propus")
+                            or nomenclator_suggestion.get("dosar")
+                            or extracted.get("dosar_propus")
+                            or extracted.get("dosar")
+                        )
+                        suggested_code = (
+                            nomenclator_suggestion.get("cod")
+                            or nomenclator_suggestion.get("cod_nomenclator")
+                            or (doc.get("nomenclator") or {}).get("code")
+                        )
 
                     if archive_hint:
                         st.code(archive_hint, language=None)
@@ -537,6 +555,22 @@ if st.session_state.auth_token:
                         if roots:
                             dosare_options = _flatten_dosare_from_tree(roots)
 
+                        if not any(
+                            d.get("nomenclator_code") == suggested_code and d.get("title") == suggested_dosar
+                            for d in dosare_options
+                        ) and (suggested_code or suggested_dosar):
+                            dosare_options.append({
+                                "id": None,
+                                "dosar_number": None,
+                                "title": suggested_dosar or "Suggested Folder",
+                                "description": "Create folder from suggested nomenclator",
+                                "nomenclator_id": None,
+                                "nomenclator_code": suggested_code,
+                                "nomenclator_name": suggested_code,
+                                "documents_count": 0,
+                                "is_suggestion": True,
+                            })
+
                         selected_dosar = None
                         if dosare_options:
                             labels = [_format_dosar_label(dosar) for dosar in dosare_options]
@@ -563,15 +597,20 @@ if st.session_state.auth_token:
                         if not nomenclator_confirmed:
                             confirm_payload = {"confirmed": True}
                             if selected_dosar:
-                                confirm_payload["dosar_id"] = selected_dosar.get("id")
-                                confirm_payload["nomenclator_id"] = selected_dosar.get("nomenclator_id")
+                                if selected_dosar.get("is_suggestion"):
+                                    confirm_payload["create_dosar_from_suggestion"] = True
+                                    confirm_payload["suggested_nomenclator_code"] = selected_dosar.get("nomenclator_code")
+                                    confirm_payload["suggested_dosar_title"] = selected_dosar.get("title")
+                                else:
+                                    confirm_payload["dosar_id"] = selected_dosar.get("id")
+                                    confirm_payload["nomenclator_id"] = selected_dosar.get("nomenclator_id")
                             elif doc.get("dosar_id") and doc.get("nomenclator_id"):
                                 confirm_payload["dosar_id"] = doc.get("dosar_id")
                                 confirm_payload["nomenclator_id"] = doc.get("nomenclator_id")
 
                             confirm_disabled = not (
                                 confirm_payload.get("dosar_id") and confirm_payload.get("nomenclator_id")
-                            )
+                            ) and not confirm_payload.get("create_dosar_from_suggestion")
 
                             if st.button(
                                 "✓ Confirm Nomenclator",
@@ -668,9 +707,101 @@ if st.session_state.auth_token:
 
                     elif status_upper == "RETURNED":
                         st.info(
-                            "Document returned for correction. Update fields via the API (PUT /documents/{id}) "
-                            "and the status will return to REVIEW."
+                            "Document returned for correction. Edit the document details below and submit. "
+                            "If the submission changes any field, status will return to REVIEW."
                         )
+
+                        with st.form(key=f"returned_document_form_{doc_id}"):
+                            st.subheader("Edit Returned Document")
+                            title_input = st.text_input(
+                                "Title",
+                                value=doc.get("title", "") or "",
+                                key=f"returned_title_{doc_id}",
+                            )
+                            description_input = st.text_area(
+                                "Description",
+                                value=doc.get("description", "") or "",
+                                key=f"returned_description_{doc_id}",
+                                height=120,
+                            )
+                            document_number_input = st.text_input(
+                                "Document Number",
+                                value=doc.get("document_number", "") or "",
+                                key=f"returned_document_number_{doc_id}",
+                            )
+                            amount_value = doc.get("amount")
+                            amount_input = st.number_input(
+                                "Amount",
+                                value=float(amount_value) if amount_value is not None else 0.0,
+                                min_value=0.0,
+                                format="%.2f",
+                                key=f"returned_amount_{doc_id}",
+                            )
+                            currency_input = st.text_input(
+                                "Currency",
+                                value=doc.get("currency", "RON") or "RON",
+                                max_chars=3,
+                                key=f"returned_currency_{doc_id}",
+                            )
+                            document_type_options = [
+                                "invoice",
+                                "contract",
+                                "report",
+                                "correspondence",
+                                "decision",
+                                "protocol",
+                                "other",
+                                "adresa",
+                                "cerere",
+                                "hcl",
+                                "deviz",
+                            ]
+                            current_type = doc.get("document_type") or "other"
+                            type_index = document_type_options.index(current_type) if current_type in document_type_options else 0
+                            document_type_input = st.selectbox(
+                                "Document Type",
+                                document_type_options,
+                                index=type_index,
+                                key=f"returned_document_type_{doc_id}",
+                            )
+                            document_date_value = doc.get("document_date")
+                            try:
+                                document_date_default = datetime.fromisoformat(document_date_value).date() if document_date_value else datetime.now().date()
+                            except Exception:
+                                document_date_default = datetime.now().date()
+                            document_date_input = st.date_input(
+                                "Document Date",
+                                value=document_date_default,
+                                key=f"returned_document_date_{doc_id}",
+                            )
+
+                            submit_returned = st.form_submit_button("Submit Corrections")
+
+                        if submit_returned:
+                            document_date_iso = document_date_input.isoformat() + "T00:00:00"
+                            payload = {
+                                "title": title_input,
+                                "description": description_input,
+                                "document_number": document_number_input,
+                                "amount": amount_input,
+                                "currency": currency_input.strip().upper() if currency_input else None,
+                                "document_type": document_type_input,
+                                "document_date": document_date_iso,
+                            }
+                            try:
+                                update_response = requests.put(
+                                    f"{API_BASE_URL}/documents/{doc_id}",
+                                    headers=headers,
+                                    json=payload,
+                                    timeout=10,
+                                )
+                                if update_response.status_code in [200, 202]:
+                                    st.success("Corrections submitted. Document returned to REVIEW.")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Update failed: {update_response.status_code}")
+                            except Exception as e:
+                                st.error(f"Error: {str(e)}")
 
                     else:
                         st.info(f"Current status: {status_upper}. No operator actions available.")

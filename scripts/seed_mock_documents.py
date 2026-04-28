@@ -183,10 +183,20 @@ def seed_mock_documents(db: Session):
     admin = get_or_create_admin(db)
     
     # Create nomenclator entries
-    fin_parent = get_or_create_nomenclator(db, "FIN", "Financial Documents")
-    inv_parent = get_or_create_nomenclator(db, "FIN-INV", "Invoices", "FIN")
-    legal_parent = get_or_create_nomenclator(db, "LEGAL", "Legal Documents")
-    contracts = get_or_create_nomenclator(db, "LEGAL-CON", "Contracts", "LEGAL")
+    i_parent = get_or_create_nomenclator(db, "I", "Administrative and Management Documents")
+    i1_parent = get_or_create_nomenclator(db, "I.1", "Decisions, resolutions, internal regulations, annual reports", "I")
+    ii_parent = get_or_create_nomenclator(db, "II", "Personnel Documents")
+    ii1_parent = get_or_create_nomenclator(db, "II.1", "Personnel files, job descriptions, staffing tables, individual employment contracts", "II")
+    iii_parent = get_or_create_nomenclator(db, "III", "Financial and Accounting Documents")
+    iii1_parent = get_or_create_nomenclator(db, "III.1", "Execution accounts, balance sheets, accounting notes, invoices, payment orders, bank statements", "III")
+    iv_parent = get_or_create_nomenclator(db, "IV", "Fixed Assets and Materials Documents")
+    iv1_parent = get_or_create_nomenclator(db, "IV.1", "Inventory lists, disposal reports, warehouse records", "IV")
+    v_parent = get_or_create_nomenclator(db, "V", "Educational Activity Documents")
+    v1_parent = get_or_create_nomenclator(db, "V.1", "Curriculum plans, timetables, catalogs, register books", "V")
+    vi_parent = get_or_create_nomenclator(db, "VI", "Correspondence")
+    vi1_parent = get_or_create_nomenclator(db, "VI.1", "Current institutional correspondence", "VI")
+    vii_parent = get_or_create_nomenclator(db, "VII", "Other Documents")
+    vii1_parent = get_or_create_nomenclator(db, "VII.1", "Register books, special regime forms, other documents", "VII")
     
     print("✓ Prerequisites created\n")
     

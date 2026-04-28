@@ -13,7 +13,7 @@ import tempfile
 from app.dependencies.security import RBACRole, require_roles
 from app.db.database import get_db
 from app.models.audit import AuditActionEnum
-from app.models.archive import Dosar, NomenclatorEntry
+from app.models.archive import Dosar, NomenclatorEntry, PastrareEnum
 from app.models.document import Document, DocumentStatusEnum, ExtractedData, DocumentTypeEnum
 from app.models.user import User
 from app.schemas import (
@@ -29,6 +29,60 @@ from app.services import graph_service
 from app.services.storage import StorageService, storage   # existing MinIO helper
 from app.services.search import SearchService
 from pydantic import BaseModel
+
+
+def _extract_data_map(doc: Document) -> dict[str, str]:
+    return {
+        item.field_name: item.field_value
+        for item in getattr(doc, "extracted_data", [])
+        if item.field_name
+    }
+
+
+def _parse_termen_pastrare(value: Optional[str]) -> PastrareEnum:
+    if not value:
+        return PastrareEnum.FIVE_YEARS
+    try:
+        return PastrareEnum(value)
+    except ValueError:
+        return PastrareEnum.FIVE_YEARS
+
+
+def _generate_dosar_number_from_code(db: Session, code: str) -> str:
+    prefix = code.replace(".", "").upper()
+    count = db.query(Dosar).filter(Dosar.dosar_number.ilike(f"{prefix}-%")).count()
+    return f"{prefix}-{count + 1:04d}"
+
+
+def _create_dosar_from_suggestion(
+    db: Session,
+    code: str,
+    title: str,
+    termen_pastrare: Optional[str] = None,
+) -> Dosar:
+    nomenclator = db.query(NomenclatorEntry).filter(NomenclatorEntry.code == code).first()
+    if not nomenclator:
+        raise HTTPException(status_code=400, detail=f"Invalid suggested nomenclator code: {code}")
+
+    existing = db.query(Dosar).filter(
+        Dosar.nomenclator_id == nomenclator.id,
+        Dosar.title == title,
+    ).first()
+    if existing:
+        return existing
+
+    dosar_number = _generate_dosar_number_from_code(db, code)
+    new_dosar = Dosar(
+        dosar_number=dosar_number,
+        title=title,
+        description=f"Auto-created from suggestion {code}",
+        nomenclator_id=nomenclator.id,
+        termen_pastrare=_parse_termen_pastrare(termen_pastrare),
+    )
+    db.add(new_dosar)
+    db.commit()
+    db.refresh(new_dosar)
+    return new_dosar
 
 import hashlib
 import uuid
@@ -1074,6 +1128,32 @@ async def confirm_nomenclator(
         )
 
     changes: dict[str, dict[str, object]] = {}
+
+    extracted_map = _extract_data_map(doc)
+
+    if payload.create_dosar_from_suggestion:
+        if payload.dosar_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot create a suggested dosar when dosar_id is provided",
+            )
+
+        suggested_code = payload.suggested_nomenclator_code or extracted_map.get("cod_nomenclator")
+        suggested_title = payload.suggested_dosar_title or extracted_map.get("dosar_propus")
+        if not suggested_code or not suggested_title:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing suggested code or title for auto-creating dosar",
+            )
+
+        created_dosar = _create_dosar_from_suggestion(
+            db,
+            suggested_code,
+            suggested_title,
+            extracted_map.get("termen_pastrare"),
+        )
+        payload.dosar_id = created_dosar.id
+        payload.nomenclator_id = created_dosar.nomenclator_id
 
     if payload.nomenclator_id is not None:
         nomenclator = db.query(NomenclatorEntry).filter(NomenclatorEntry.id == payload.nomenclator_id).first()

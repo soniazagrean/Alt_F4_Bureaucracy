@@ -103,3 +103,7 @@ app.include_router(archive_router)
 # Include audit trail router
 from app.routes.audit_trail import router as audit_trail_router
 app.include_router(audit_trail_router)
+
+# Include graph router
+from app.routes.routes_graph import router as graph_router
+app.include_router(graph_router)

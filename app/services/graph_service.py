@@ -14,6 +14,157 @@ REL_RELATED_TO = "RELATED_TO"
 NEO4J_QUERY_TIMEOUT_SEC = 5
 
 
+def _neo4j_element_id(node: Any) -> Optional[str]:
+    if node is None:
+        return None
+    element_id = getattr(node, "element_id", None)
+    if element_id:
+        return str(element_id)
+    node_id = getattr(node, "id", None)
+    if node_id is not None:
+        return str(node_id)
+    return None
+
+
+def _label_from_props(props: Dict[str, Any], keys: list[str], fallback: str) -> str:
+    for key in keys:
+        value = props.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return fallback
+
+
+def _person_label(props: Dict[str, Any], fallback: str) -> str:
+    first = props.get("first_name") or props.get("firstName")
+    last = props.get("last_name") or props.get("lastName")
+    if first or last:
+        return f"{first or ''} {last or ''}".strip()
+    return _label_from_props(
+        props,
+        ["full_name", "name", "username", "email", "id"],
+        fallback,
+    )
+
+
+def _company_label(props: Dict[str, Any], fallback: str) -> str:
+    return _label_from_props(
+        props,
+        ["name", "legal_name", "company_name", "CUI", "id"],
+        fallback,
+    )
+
+
+def _contract_label(props: Dict[str, Any], fallback: str) -> str:
+    return _label_from_props(
+        props,
+        ["title", "contract_number", "number", "id"],
+        fallback,
+    )
+
+
+def get_influence_network(min_admin_companies: int = 3) -> Dict[str, list[Dict[str, Any]]]:
+    query = """
+    MATCH (p:Person)-[:ADMINISTERS]->(c:Company)
+    OPTIONAL MATCH (c)-[:WON_CONTRACT]->(k:Contract)
+    WITH p, c, k, size((p)-[:ADMINISTERS]->()) AS admin_count
+    RETURN p AS person, c AS company, k AS contract, admin_count AS admin_count
+    """
+
+    with get_neo4j_session() as session:
+        records = session.execute_read(
+            lambda tx: list(tx.run(query, timeout=NEO4J_QUERY_TIMEOUT_SEC))
+        )
+
+    nodes: Dict[str, Dict[str, Any]] = {}
+    edges: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+
+    for record in records:
+        person = record.get("person")
+        company = record.get("company")
+        contract = record.get("contract")
+        admin_count = int(record.get("admin_count") or 0)
+
+        person_id = _neo4j_element_id(person)
+        company_id = _neo4j_element_id(company)
+        contract_id = _neo4j_element_id(contract) if contract else None
+
+        if person and person_id:
+            person_props = _to_dict(person) or {}
+            person_label = _person_label(person_props, f"Person {person_id[-6:]}")
+            nodes.setdefault(
+                person_id,
+                {
+                    "id": person_id,
+                    "label": person_label,
+                    "type": "Person",
+                    "properties": person_props,
+                    "admin_count": admin_count,
+                    "risk": admin_count >= min_admin_companies,
+                },
+            )
+            nodes[person_id]["admin_count"] = max(
+                admin_count, int(nodes[person_id].get("admin_count") or 0)
+            )
+            nodes[person_id]["risk"] = nodes[person_id]["admin_count"] >= min_admin_companies
+
+        if company and company_id:
+            company_props = _to_dict(company) or {}
+            company_label = _company_label(company_props, f"Company {company_id[-6:]}")
+            nodes.setdefault(
+                company_id,
+                {
+                    "id": company_id,
+                    "label": company_label,
+                    "type": "Company",
+                    "properties": company_props,
+                },
+            )
+
+        if contract and contract_id:
+            contract_props = _to_dict(contract) or {}
+            contract_label = _contract_label(contract_props, f"Contract {contract_id[-6:]}")
+            nodes.setdefault(
+                contract_id,
+                {
+                    "id": contract_id,
+                    "label": contract_label,
+                    "type": "Contract",
+                    "properties": contract_props,
+                },
+            )
+
+        if person_id and company_id:
+            edge_key = (person_id, company_id, "ADMINISTERS")
+            edges.setdefault(
+                edge_key,
+                {
+                    "id": f"{person_id}->{company_id}:ADMINISTERS",
+                    "source": person_id,
+                    "target": company_id,
+                    "type": "ADMINISTERS",
+                    "label": "ADMINISTERS",
+                },
+            )
+
+        if company_id and contract_id:
+            edge_key = (company_id, contract_id, "WON_CONTRACT")
+            edges.setdefault(
+                edge_key,
+                {
+                    "id": f"{company_id}->{contract_id}:WON_CONTRACT",
+                    "source": company_id,
+                    "target": contract_id,
+                    "type": "WON_CONTRACT",
+                    "label": "WON_CONTRACT",
+                },
+            )
+
+    return {
+        "nodes": list(nodes.values()),
+        "edges": list(edges.values()),
+    }
+
+
 def _to_dict(node: Any) -> Optional[Dict[str, Any]]:
     if node is None:
         return None

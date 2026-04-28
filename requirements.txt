@@ -27,6 +27,7 @@ minio==7.2.0
 
 # Streamlit
 streamlit==1.30.0
+streamlit-agraph==0.0.45
 
 # Data Processing
 pandas==2.1.3

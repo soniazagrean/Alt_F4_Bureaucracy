@@ -103,6 +103,8 @@ if token := st.session_state.get("auth_token"):
     headers["Authorization"] = f"Bearer {token}"
 else:
     st.sidebar.info("Login in the documents view to access protected data.")
+    st.warning("You must log in before viewing graph intelligence.")
+    st.stop()
 
 try:
     with st.spinner("Loading influence network..."):

@@ -65,14 +65,22 @@ def _contract_label(props: Dict[str, Any], fallback: str) -> str:
 def get_influence_network(min_admin_companies: int = 3) -> Dict[str, list[Dict[str, Any]]]:
     query = """
     MATCH (p:Person)-[:ADMINISTERS]->(c:Company)
+    OPTIONAL MATCH (p)-[:ADMINISTERS]->(otherCompany:Company)
     OPTIONAL MATCH (c)-[:WON_CONTRACT]->(k:Contract)
-    WITH p, c, k, size((p)-[:ADMINISTERS]->()) AS admin_count
+    WITH p, c, k, count(DISTINCT otherCompany) AS admin_count
+    WHERE admin_count >= $min_admin_companies
     RETURN p AS person, c AS company, k AS contract, admin_count AS admin_count
     """
 
     with get_neo4j_session() as session:
         records = session.execute_read(
-            lambda tx: list(tx.run(query, timeout=NEO4J_QUERY_TIMEOUT_SEC))
+            lambda tx: list(
+                tx.run(
+                    query,
+                    min_admin_companies=min_admin_companies,
+                    timeout=NEO4J_QUERY_TIMEOUT_SEC,
+                )
+            )
         )
 
     nodes: Dict[str, Dict[str, Any]] = {}

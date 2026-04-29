@@ -1,8 +1,43 @@
 """Pydantic schemas for invoice extraction and validation."""
+import re
 from pydantic import BaseModel, Field, validator
 from datetime import datetime
 from typing import Optional, List
 from decimal import Decimal
+
+
+def _normalize_numeric_text(value):
+    if value is None:
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        return str(value)
+
+    text = str(value).strip()
+    if not text:
+        return text
+
+    text = re.sub(r"[^0-9,\.\-]", "", text)
+    if not text:
+        return text
+
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(".", "").replace(",", ".")
+    elif text.count(".") > 1:
+        parts = text.split(".")
+        text = "".join(parts[:-1]) + "." + parts[-1]
+
+    return text
+
+
+def _normalize_text(value):
+    if value is None:
+        return value
+    return str(value).strip()
 
 
 class InvoiceItem(BaseModel):
@@ -12,6 +47,20 @@ class InvoiceItem(BaseModel):
     unit: str = Field(default="buc", description="Unit of measurement")
     unit_price: Decimal = Field(..., gt=0, description="Price per unit")
     total_price: Decimal = Field(..., ge=0, description="Total price for this line item")
+
+    @validator('quantity', pre=True)
+    def parse_quantity(cls, v):
+        if v is None:
+            return v
+        return float(_normalize_numeric_text(v))
+
+    @validator('unit', pre=True)
+    def parse_unit(cls, v):
+        return _normalize_text(v)
+
+    @validator('unit_price', 'total_price', pre=True)
+    def parse_decimal_fields(cls, v):
+        return Decimal(_normalize_numeric_text(v)) if v is not None else Decimal('0')
 
     class Config:
         from_attributes = True
@@ -70,32 +119,43 @@ class InvoiceData(BaseModel):
     @validator('TVA', pre=True)
     def validate_tva(cls, v, values):
         """Ensure TVA doesn't exceed total."""
+        normalized = Decimal(_normalize_numeric_text(v)) if v is not None else Decimal('0')
         if 'total' in values:
-            if Decimal(str(v)) > Decimal(str(values['total'])):
+            if normalized > Decimal(str(values['total'])):
                 raise ValueError('TVA cannot be greater than total amount')
-        return Decimal(str(v)) if v is not None else Decimal('0')
+        return normalized
     
     @validator('total', pre=True)
     def parse_decimal(cls, v):
         """Convert numeric values to Decimal."""
-        return Decimal(str(v)) if v is not None else Decimal('0')
+        return Decimal(_normalize_numeric_text(v)) if v is not None else Decimal('0')
+
+    @validator('currency', pre=True)
+    def normalize_currency(cls, v):
+        if v is None:
+            return v
+        text = _normalize_text(v)
+        return text.upper() if text else text
     
-    @validator('CUI')
+    @validator('CUI', pre=True)
     def validate_cui(cls, v):
         """CUI should be numeric and typically 10 digits."""
+        if v is None:
+            return v
+        v = re.sub(r"\D", "", str(v))
         if not v.isdigit():
             raise ValueError('CUI must contain only digits')
         if len(v) < 8 or len(v) > 10:
             raise ValueError('CUI should be between 8-10 digits')
         return v
     
-    @validator('IBAN')
+    @validator('IBAN', pre=True)
     def validate_iban(cls, v):
         """Validate IBAN format (basic validation)."""
         if v is None:
             return v
         # Remove spaces
-        v = v.replace(' ', '').upper()
+        v = re.sub(r"\s+", "", str(v)).upper()
         # IBAN format: country code (2 letters) + check digits (2 digits) + BBAN
         if len(v) < 15:
             raise ValueError('IBAN too short')

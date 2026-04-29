@@ -17,13 +17,27 @@ COLOR_EDGE = "#94A3B8"
 st.set_page_config(page_title="Visual Graph Intelligence", layout="wide")
 
 st.title("Visual Graph Intelligence")
-st.caption("Detect influence networks and potential conflicts of interest.")
+st.caption("Inspect either the influence network or the document contract graph.")
+
+
+graph_mode = st.sidebar.radio("Graph mode", ["Contracts", "Influence"], index=0)
 
 
 def _fetch_influence_network(min_admin_companies: int, headers: dict[str, str]) -> dict[str, Any]:
     response = requests.get(
         f"{API_BASE_URL}/api/v1/graph/influence-network",
         params={"min_admin_companies": min_admin_companies},
+        headers=headers,
+        timeout=10,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
+    return response.json()
+
+
+def _fetch_contract_network(headers: dict[str, str]) -> dict[str, Any]:
+    response = requests.get(
+        f"{API_BASE_URL}/api/v1/graph/contract-network",
         headers=headers,
         timeout=10,
     )
@@ -107,8 +121,12 @@ else:
     st.stop()
 
 try:
-    with st.spinner("Loading influence network..."):
-        payload = _fetch_influence_network(min_admin_companies, headers)
+    if graph_mode == "Influence":
+        with st.spinner("Loading influence network..."):
+            payload = _fetch_influence_network(min_admin_companies, headers)
+    else:
+        with st.spinner("Loading contract graph..."):
+            payload = _fetch_contract_network(headers)
 except requests.exceptions.ConnectionError:
     st.error("Cannot reach the API server.")
     st.stop()
@@ -119,9 +137,12 @@ except RuntimeError as exc:
 nodes = payload.get("nodes", [])
 edges = payload.get("edges", [])
 
-nodes, edges = _apply_min_degree_filter(nodes, edges, min_connections)
+if graph_mode == "Influence":
+    nodes, edges = _apply_min_degree_filter(nodes, edges, min_connections)
 
-risk_count = sum(1 for node in nodes if node.get("type") == "Person" and node.get("risk"))
+show_risk_flag = graph_mode == "Influence"
+
+risk_count = sum(1 for node in nodes if node.get("type") == "Person" and node.get("risk")) if show_risk_flag else 0
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Nodes", str(len(nodes)))
@@ -129,7 +150,10 @@ col2.metric("Edges", str(len(edges)))
 col3.metric("Risk flags", str(risk_count))
 
 if not nodes:
-    st.info("No influence network data available for the current filters.")
+    if graph_mode == "Influence":
+        st.info("No influence network data available for the current filters.")
+    else:
+        st.info("No contract graph data available.")
     st.stop()
 
 agraph(

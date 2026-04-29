@@ -4,11 +4,12 @@ import base64
 from typing import Optional, Tuple
 from pathlib import Path
 import logging
+import time
 from decimal import Decimal
+from copy import deepcopy
+import re
 
 import httpx
-from PIL import Image
-import io
 
 from app.config import settings
 from app.schemas_invoice import InvoiceData, InvoiceExtractionResponse
@@ -19,6 +20,86 @@ logger = logging.getLogger(__name__)
 
 class InvoiceExtractionService:
     """Service for extracting structured data from invoice images using LLM vision."""
+
+    @staticmethod
+    def _normalize_numeric_text(value):
+        if value is None:
+            return value
+        if isinstance(value, (int, float, Decimal)):
+            return str(value)
+
+        text = str(value).strip()
+        if not text:
+            return text
+
+        text = re.sub(r"[^0-9,\.\-]", "", text)
+        if not text:
+            return text
+
+        if "," in text and "." in text:
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif "," in text:
+            text = text.replace(".", "").replace(",", ".")
+        elif text.count(".") > 1:
+            parts = text.split(".")
+            text = "".join(parts[:-1]) + "." + parts[-1]
+
+        return text
+
+    @staticmethod
+    def _normalize_extracted_data(extracted_data: dict) -> dict:
+        """Normalize common alias keys and value formats before validation."""
+        data = deepcopy(extracted_data)
+
+        aliases = {
+            "nr_factura": ["invoice_number", "invoice_no", "factura", "number"],
+            "data": ["date", "invoice_date", "issue_date"],
+            "furnizor": ["supplier", "vendor", "company_name"],
+            "CUI": ["cui", "tax_id", "company_tax_id", "vat_number", "cif"],
+            "IBAN": ["iban", "account_iban", "bank_account"],
+            "currency": ["cur", "moneda", "monedă"],
+            "total": ["amount_total", "total_amount", "grand_total", "sum_total"],
+            "TVA": ["vat", "tax", "vat_amount", "tax_amount"],
+            "numar_ordine": ["po_number", "order_number", "purchase_order"],
+            "termen_plata": ["due_date", "payment_due", "deadline"],
+            "observatii": ["notes", "remarks"],
+            "items": ["line_items", "produse", "articole"],
+        }
+
+        for canonical_key, alias_keys in aliases.items():
+            if data.get(canonical_key) in (None, "", []):
+                for alias_key in alias_keys:
+                    if alias_key in data and data[alias_key] not in (None, "", []):
+                        data[canonical_key] = data[alias_key]
+                        break
+
+        if isinstance(data.get("items"), list):
+            normalized_items = []
+            for item in data["items"]:
+                if not isinstance(item, dict):
+                    normalized_items.append(item)
+                    continue
+
+                normalized_item = dict(item)
+                item_aliases = {
+                    "quantity": ["qty", "cantitate"],
+                    "unit": ["uom", "unit_of_measurement"],
+                    "unit_price": ["price", "unitprice", "pret_unitar"],
+                    "total_price": ["amount", "line_total", "total", "value"],
+                }
+                for canonical_key, alias_keys in item_aliases.items():
+                    if normalized_item.get(canonical_key) in (None, ""):
+                        for alias_key in alias_keys:
+                            if alias_key in normalized_item and normalized_item[alias_key] not in (None, ""):
+                                normalized_item[canonical_key] = normalized_item[alias_key]
+                                break
+                normalized_items.append(normalized_item)
+            data["items"] = normalized_items
+
+        return data
     
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -89,6 +170,7 @@ class InvoiceExtractionService:
             
             # Parse the response
             extracted_data, confidence = self._parse_openai_response(response)
+            extracted_data = self._normalize_extracted_data(extracted_data)
             
             # Validate with Pydantic
             try:
@@ -128,7 +210,7 @@ IMPORTANT: You MUST respond with ONLY valid JSON in this exact format, nothing e
     "nr_factura": "invoice number",
     "data": "date in DD.MM.YYYY format",
     "furnizor": "supplier/vendor name",
-    "CUI": "company tax ID (10 digits for Romania)",
+    "CUI": "company tax ID (8-10 digits)",
     "IBAN": "bank account IBAN or null",
     "currency": "currency code (EUR, RON, USD, GBP, etc) or null",
     "items": [
@@ -136,37 +218,27 @@ IMPORTANT: You MUST respond with ONLY valid JSON in this exact format, nothing e
             "description": "item description",
             "quantity": 1.0,
             "unit": "unit of measurement (buc, kg, etc)",
-            "unit_price": "price per unit as decimal",
-            "total_price": "line item total as decimal"
+            "unit_price": 100.00,
+            "total_price": 200.00
         }}
     ],
-    "total": "total amount including VAT as decimal",
-    "TVA": "VAT/tax amount as decimal",
+    "total": 238.00,
+    "TVA": 38.00,
     "numar_ordine": "PO/order number or null",
     "termen_plata": "payment deadline in DD.MM.YYYY format or null",
     "observatii": "additional notes or null"
 }}
 
 EXTRACTION RULES:
-1. Extract EXACTLY what you see - do not invent data
-2. For dates: Use DD.MM.YYYY format (e.g., 15.03.2024)
-3. For amounts: Use decimal format with dot (e.g., 250.50, not "250,50")
-4. For CUI: Extract the 10-digit company tax ID
-5. For items: List all line items from the invoice table
-6. Calculate totals accurately from the items list
-7. TVA is the tax amount (difference between total and subtotal, or explicitly stated)
-8. If a field is not visible/available, use null (not empty string)
-9. Ensure all numeric values are valid decimals
-10. For IBAN: Clean spaces and format standardly or use null if not found
-
-VALIDATION:
-- Invoice number cannot be empty
-- Supplier name cannot be empty
-- CUI must be numeric and 8-10 digits
-- Items list must have at least one item
-- Each item must have positive quantity and unit_price
-- Total must be >= TVA
-- All amounts must be positive or zero
+1. Extract EXACTLY what you see - do not invent data.
+2. Use the keys exactly as shown above.
+3. For dates: use DD.MM.YYYY format (e.g., 15.03.2024).
+4. For amounts: return plain numbers only, without currency symbols or text.
+5. For CUI: return only digits, 8-10 digits if available.
+6. For items: list all visible line items.
+7. If a field is not visible/available, use null (not empty string).
+8. Ensure all numeric values are valid JSON numbers.
+9. For IBAN: clean spaces and uppercase it, or use null if not found.
 
 Output ONLY the JSON object, no markdown, no explanations."""
         
@@ -191,6 +263,7 @@ Output ONLY the JSON object, no markdown, no explanations."""
         
         payload = {
             "model": self.model,
+            "response_format": {"type": "json_object"},
             "messages": [
                 {
                     "role": "user",
@@ -208,22 +281,56 @@ Output ONLY the JSON object, no markdown, no explanations."""
                     ]
                 }
             ],
-            "temperature": 0.1,
+            "temperature": 0.0,
             "max_tokens": 2048
         }
         
-        try:
-            with httpx.Client() as client:
-                response = client.post(
-                    self.base_url,
-                    json=payload,
-                    headers=headers,
-                    timeout=60.0
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.RequestError as e:
-            raise Exception(f"OpenAI API request failed: {str(e)}")
+        max_attempts = 3
+        last_error = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client() as client:
+                    response = client.post(
+                        self.base_url,
+                        json=payload,
+                        headers=headers,
+                        timeout=60.0
+                    )
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code in {429, 500, 502, 503, 504} and attempt < max_attempts:
+                    retry_after = exc.response.headers.get("Retry-After") if exc.response is not None else None
+                    delay = float(retry_after) if retry_after and retry_after.isdigit() else 2.0 * attempt
+                    logger.warning(
+                        "OpenAI invoice extraction request failed with %s; retrying in %.1fs (%s/%s)",
+                        status_code,
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    time.sleep(delay)
+                    last_error = exc
+                    continue
+                raise Exception(f"OpenAI API request failed: {str(exc)}")
+            except httpx.RequestError as e:
+                last_error = e
+                if attempt < max_attempts:
+                    delay = 2.0 * attempt
+                    logger.warning(
+                        "OpenAI invoice extraction transport error; retrying in %.1fs (%s/%s): %s",
+                        delay,
+                        attempt,
+                        max_attempts,
+                        e,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise Exception(f"OpenAI API request failed: {str(e)}")
+
+        raise Exception(f"OpenAI API request failed after {max_attempts} attempts: {last_error}")
     
     @staticmethod
     def _parse_openai_response(response: dict) -> Tuple[dict, float]:
@@ -237,18 +344,19 @@ Output ONLY the JSON object, no markdown, no explanations."""
             Tuple of (extracted JSON dict, confidence score)
         """
         try:
-            # Extract text from OpenAI response
             if "choices" not in response or not response["choices"]:
                 raise ValueError("No choices in API response")
-            
+
             choice = response["choices"][0]
             if "message" not in choice or "content" not in choice["message"]:
                 raise ValueError("No content in message")
-            
+
             text_content = choice["message"]["content"]
-            
-            # Try to extract JSON from the response
-            # Sometimes the API might wrap it in markdown code blocks
+
+            if isinstance(text_content, dict):
+                extracted_data = text_content
+                return extracted_data, 0.95
+
             if "```json" in text_content:
                 start = text_content.find("```json") + 7
                 end = text_content.find("```", start)
@@ -257,15 +365,10 @@ Output ONLY the JSON object, no markdown, no explanations."""
                 start = text_content.find("```") + 3
                 end = text_content.find("```", start)
                 text_content = text_content[start:end].strip()
-            
-            # Parse JSON
+
             extracted_data = json.loads(text_content)
-            
-            # Calculate confidence (OpenAI doesn't provide explicit confidence, so use 0.9 as default)
-            confidence = 0.9
-            
-            return extracted_data, confidence
-            
+            return extracted_data, 0.95
+
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse API response as JSON: {str(e)}")
         except Exception as e:

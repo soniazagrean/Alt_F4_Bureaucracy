@@ -110,3 +110,51 @@ def test_invoice_extraction_validation_error(invoice_service, fixture_dir):
         assert errors is not None, "Errors should be present for malformed data"
         assert isinstance(errors, list), "Errors should be a list"
         assert len(errors) > 0, "At least one error should be present"
+
+
+def test_invoice_extraction_normalizes_aliases_and_numeric_formats(invoice_service):
+    """Test that common alias keys and localized numeric formats are normalized before validation."""
+    messy_data = {
+        "invoice_number": "FAC-2026/002",
+        "invoice_date": "29.04.2026",
+        "supplier": "SC ACME INDUSTRIES SRL",
+        "tax_id": "RO12345678",
+        "iban": "ro49 aaaa 1b31 0075 9384 0000",
+        "currency": "ron",
+        "items": [
+            {
+                "description": "Software license",
+                "qty": "2",
+                "price": "2,590.50 RON",
+                "amount": "5,181.00 RON",
+            }
+        ],
+        "total_amount": "5,181.00 RON",
+        "vat": "981,00 RON",
+    }
+
+    mock_response = {
+        "choices": [{
+            "message": {
+                "content": json.dumps(messy_data)
+            }
+        }]
+    }
+
+    with patch.object(invoice_service, '_image_to_base64', return_value="ZmFrZV9pbWFnZV9ieXRlcw=="), \
+         patch.object(invoice_service, '_get_image_media_type', return_value="image/png"), \
+         patch.object(invoice_service, '_call_openai_api', return_value=mock_response):
+        invoice_data, errors, confidence = invoice_service.extract_invoice_data("dummy.png")
+
+        assert invoice_data is not None, f"Normalization should have rescued the payload: {errors}"
+        assert errors is None
+        assert confidence > 0
+        assert invoice_data.nr_factura == "FAC-2026/002"
+        assert invoice_data.furnizor == "SC ACME INDUSTRIES SRL"
+        assert invoice_data.CUI == "12345678"
+        assert invoice_data.currency == "RON"
+        assert str(invoice_data.total) == "5181.00"
+        assert str(invoice_data.TVA) == "981.00"
+        assert len(invoice_data.items) == 1
+        assert str(invoice_data.items[0].unit_price) == "2590.50"
+        assert str(invoice_data.items[0].total_price) == "5181.00"

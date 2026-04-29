@@ -28,6 +28,9 @@ from app.services.document_classification import DocumentClassificationService
 from app.services import graph_service
 from app.services.storage import StorageService, storage   # existing MinIO helper
 from app.services.search import SearchService
+from app.models.audit import AuditLog
+from app.db.neo4j import get_neo4j_session
+from app.models.document import DocumentPage
 from pydantic import BaseModel
 
 
@@ -1011,9 +1014,93 @@ async def update_document(
         "updated_fields": sorted(changes.keys()),
     })
 
-@router.delete("/{document_id}", include_in_schema=False)
-async def delete_document(document_id: int, _=Depends(require_roles(RBACRole.ADMIN))):
-    return JSONResponse({"detail": "not implemented"}, status_code=501)
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RBACRole.ADMIN)),
+):
+    """Delete a document and related resources (MinIO objects, MeiliSearch index, Neo4j node, alerts, audit refs)."""
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Collect storage object paths to remove
+    storage_paths: list[str] = []
+    if getattr(doc, "file_path", None):
+        storage_paths.append(doc.file_path)
+
+    for page in getattr(doc, "pages", []) or []:
+        if getattr(page, "image_path", None):
+            storage_paths.append(page.image_path)
+
+    # 1) Remove from MeiliSearch (best-effort)
+    try:
+        search_svc = SearchService()
+        try:
+            search_svc.delete_document(str(document_id))
+        except Exception as e:
+            logger.warning("Failed to remove document from MeiliSearch: %s", e)
+    except Exception:
+        logger.debug("SearchService unavailable or misconfigured")
+
+    # 2) Remove Neo4j node (best-effort)
+    try:
+        with get_neo4j_session() as session:
+            session.execute_write(lambda tx: tx.run("MATCH (d:Document {id: $id}) DETACH DELETE d", id=str(document_id)))
+    except Exception as e:
+        logger.warning("Failed to remove Neo4j node for document %s: %s", document_id, e)
+
+    # 3) Delete FraudAlert rows referencing the document (to avoid FK violations)
+    try:
+        db.query(FraudAlert).filter(FraudAlert.document_id == document_id).delete(synchronize_session=False)
+    except Exception as e:
+        logger.warning("Failed to delete FraudAlert rows for document %s: %s", document_id, e)
+
+    # 4) Nullify AuditLog.document_id to preserve audit entries without FK constraints
+    try:
+        db.query(AuditLog).filter(AuditLog.document_id == document_id).update({AuditLog.document_id: None}, synchronize_session=False)
+    except Exception as e:
+        logger.warning("Failed to nullify AuditLog.document_id for document %s: %s", document_id, e)
+
+    # 5) Delete storage objects from MinIO (best-effort)
+    for path in storage_paths:
+        try:
+            if not path:
+                continue
+            bucket_name, object_name = path.split("/", 1)
+            storage.client.remove_object(bucket_name, object_name)
+            logger.info("Deleted storage object: %s", path)
+        except Exception as e:
+            logger.warning("Failed to delete storage object %s: %s", path, e)
+
+    # 6) Finally delete the DB document (cascade should remove pages and extracted_data)
+    try:
+        db.delete(doc)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.exception("Failed to delete Document %s: %s", document_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+
+    # Log audit event for deletion
+    try:
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action=AuditActionEnum.DELETE,
+            resource_type="document",
+            resource_id=document_id,
+            document_id=document_id,
+            description="Document deleted by user",
+            changes=None,
+            ip_address=get_request_ip(request),
+        )
+    except Exception:
+        logger.debug("Failed to log audit event for document deletion %s", document_id)
+
+    return JSONResponse({"status": "deleted", "document_id": document_id})
 
 
 # ------------------------------------------------------------------ NV-007

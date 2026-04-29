@@ -1,6 +1,7 @@
 """Contract extraction service using LLM vision capabilities."""
 import base64
 import json
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 import logging
@@ -88,10 +89,47 @@ Rules:
             "max_tokens": 1400,
         }
 
-        with httpx.Client() as client:
-            response = client.post(self.base_url, json=payload, headers=headers, timeout=60.0)
-            response.raise_for_status()
-            return response.json()
+        max_attempts = 3
+        last_error = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client() as client:
+                    response = client.post(self.base_url, json=payload, headers=headers, timeout=60.0)
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code in {429, 500, 502, 503, 504} and attempt < max_attempts:
+                    retry_after = exc.response.headers.get("Retry-After") if exc.response is not None else None
+                    delay = float(retry_after) if retry_after and retry_after.isdigit() else 2.0 * attempt
+                    logger.warning(
+                        "OpenAI contract extraction request failed with %s; retrying in %.1fs (%s/%s)",
+                        status_code,
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    time.sleep(delay)
+                    last_error = exc
+                    continue
+                raise
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt < max_attempts:
+                    delay = 2.0 * attempt
+                    logger.warning(
+                        "OpenAI contract extraction transport error; retrying in %.1fs (%s/%s): %s",
+                        delay,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+
+        raise RuntimeError(f"OpenAI contract extraction request failed after {max_attempts} attempts: {last_error}")
 
     @staticmethod
     def _parse_openai_response(response: dict) -> Tuple[dict, float]:

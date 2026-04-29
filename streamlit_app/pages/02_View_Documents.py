@@ -240,6 +240,8 @@ if st.session_state.auth_token:
         st.session_state.selected_dosar_id = None
     if "archive_dosar_details" not in st.session_state:
         st.session_state.archive_dosar_details = None
+    if "delete_confirm_doc_id" not in st.session_state:
+        st.session_state.delete_confirm_doc_id = None
     
     st.divider()
     
@@ -458,6 +460,38 @@ if st.session_state.auth_token:
                                 st.warning(f"PDF not available ({pdf_response.status_code})")
                         except Exception as e:
                             st.warning(f"Could not download PDF: {str(e)}")
+
+                    # Dangerous action: delete document
+                    st.markdown("#### ⚠️ Delete Document")
+                    if st.button("🗑️ Delete Document", key=f"del_init_{doc_id}"):
+                        st.session_state.delete_confirm_doc_id = str(doc_id)
+                        st.rerun()
+
+                    if st.session_state.get("delete_confirm_doc_id") == str(doc_id):
+                        st.warning("Are you sure? This will permanently delete the document and its related data.")
+                        confirm_col1, confirm_col2 = st.columns([1, 1])
+                        with confirm_col1:
+                            if st.button("Confirm Delete", key=f"del_confirm_{doc_id}"):
+                                try:
+                                    del_resp = requests.delete(
+                                        f"{API_BASE_URL}/documents/{doc_id}",
+                                        headers=headers,
+                                        timeout=20,
+                                    )
+                                    if del_resp.status_code in [200, 202, 204]:
+                                        st.success("Document deleted.")
+                                        st.session_state.selected_doc_id = None
+                                        st.session_state.search_results = None
+                                        st.session_state.delete_confirm_doc_id = None
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Delete failed: {del_resp.status_code} {del_resp.text[:200]}")
+                                except Exception as e:
+                                    st.error(f"Error deleting document: {str(e)}")
+                        with confirm_col2:
+                            if st.button("Cancel", key=f"del_cancel_{doc_id}"):
+                                st.session_state.delete_confirm_doc_id = None
+                                st.rerun()
 
                     st.markdown("#### Suggested Archive Path")
                     archive_hint = None
@@ -1314,7 +1348,7 @@ if st.session_state.auth_token:
                                 "PENDING": "⏳",
                                 "ERROR": "❌",
                             }
-                            col1, col2, col3 = st.columns([2, 1, 1])
+                            col1, col2, col3, col4 = st.columns([2, 1, 1, 0.8])
                             with col1:
                                 if st.button(
                                     f"Document: {title}",
@@ -1338,6 +1372,29 @@ if st.session_state.auth_token:
                                 st.write(f"{status_emoji.get(status_upper, '❓')} **{status_upper}**")
                             with col3:
                                 st.write(f"**{doc_type}**")
+                            with col4:
+                                # Init delete flow for this hit
+                                if st.button("🗑️ Delete", key=f"del_init_hit_{doc_id_str}"):
+                                    st.session_state.delete_confirm_doc_id = str(doc_id)
+                                    st.rerun()
+                                if st.session_state.get("delete_confirm_doc_id") == str(doc_id):
+                                    st.warning("Confirm delete this document permanently?")
+                                    if st.button("Confirm", key=f"del_confirm_hit_{doc_id_str}"):
+                                        try:
+                                            del_resp = requests.delete(
+                                                f"{API_BASE_URL}/documents/{doc_id}",
+                                                headers=headers,
+                                                timeout=15,
+                                            )
+                                            if del_resp.status_code in [200, 202, 204]:
+                                                st.success("Document deleted.")
+                                                st.session_state.search_results = None
+                                                st.session_state.delete_confirm_doc_id = None
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Delete failed: {del_resp.status_code} {del_resp.text[:200]}")
+                                        except Exception as e:
+                                            st.error(f"Error deleting document: {str(e)}")
                 else:
                     st.info("No documents found matching your search criteria")
 
@@ -1474,6 +1531,31 @@ if st.session_state.auth_token:
                                     ):
                                         st.session_state.selected_doc_id = str(doc.get('id'))
                                         st.rerun()
+                                    # Delete button for archive listing
+                                    if doc_cols[3].button(
+                                        "🗑️ Delete",
+                                        key=f"archive_del_{doc.get('id')}",
+                                        use_container_width=True,
+                                    ):
+                                        st.session_state.delete_confirm_doc_id = str(doc.get('id'))
+                                        st.rerun()
+                                    if st.session_state.get("delete_confirm_doc_id") == str(doc.get('id')):
+                                        if doc_cols[3].button("Confirm Delete", key=f"archive_del_confirm_{doc.get('id')}"):
+                                            try:
+                                                del_resp = requests.delete(
+                                                    f"{API_BASE_URL}/documents/{doc.get('id')}",
+                                                    headers=headers,
+                                                    timeout=15,
+                                                )
+                                                if del_resp.status_code in [200, 202, 204]:
+                                                    st.success("Document deleted.")
+                                                    st.session_state.archive_dosar_details = None
+                                                    st.session_state.delete_confirm_doc_id = None
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"Delete failed: {del_resp.status_code} {del_resp.text[:200]}")
+                                            except Exception as e:
+                                                st.error(f"Error deleting document: {str(e)}")
                 except requests.exceptions.ConnectionError:
                     st.error("Cannot connect to API")
                 except Exception as e:

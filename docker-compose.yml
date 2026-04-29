@@ -146,6 +146,8 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      - ./scripts:/app/scripts
+      - ./streamlit_app:/app/streamlit_app
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic/alembic.ini
       - temp_data:/tmp

@@ -4,6 +4,7 @@ import time
 import logging
 from typing import Optional, Dict, Any, Tuple
 from decimal import Decimal
+import time as time_module
 
 import httpx
 
@@ -233,54 +234,75 @@ CRITICAL REQUIREMENTS:
         return prompt
     
     def _call_openai_api(self, prompt: str) -> str:
-        """
-        Call the OpenAI API with the suggestion prompt.
-        
-        Args:
-            prompt: The prompt for nomenclator suggestion
-            
-        Returns:
-            Response text from the API
-        """
+        """Call the OpenAI API with retry/backoff for transient failures."""
         payload = {
             "model": self.model,
             "messages": [
                 {
                     "role": "user",
-                    "content": prompt
+                    "content": prompt,
                 }
             ],
-            "temperature": 0.1,  # Low temperature for consistent, deterministic responses
-            "max_tokens": 2000
+            "temperature": 0.1,
+            "max_tokens": 2000,
         }
-        
+
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.api_key}",
         }
-        
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(self.base_url, json=payload, headers=headers)
-                response.raise_for_status()
-                
-                result = response.json()
-                
-                # Extract text from response
-                if "choices" in result and len(result["choices"]) > 0:
-                    message = result["choices"][0].get("message", {})
-                    content = message.get("content", "")
-                    if content:
-                        return content
-                
-                raise ValueError("Unexpected API response format")
-                
-        except httpx.HTTPError as e:
-            logger.error(f"OpenAI API error: {str(e)}")
-            raise
-        except Exception as e:
-            logger.error(f"Error calling OpenAI API: {str(e)}")
-            raise
+
+        max_attempts = 3
+        last_error = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    response = client.post(self.base_url, json=payload, headers=headers)
+                    response.raise_for_status()
+
+                    result = response.json()
+                    if "choices" in result and len(result["choices"]) > 0:
+                        message = result["choices"][0].get("message", {})
+                        content = message.get("content", "")
+                        if content:
+                            return content
+
+                    raise ValueError("Unexpected API response format")
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code in {429, 500, 502, 503, 504} and attempt < max_attempts:
+                    retry_after = exc.response.headers.get("Retry-After") if exc.response is not None else None
+                    delay = float(retry_after) if retry_after and retry_after.isdigit() else 2.0 * attempt
+                    logger.warning(
+                        "OpenAI nomenclator request failed with %s; retrying in %.1fs (%s/%s)",
+                        status_code,
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    time_module.sleep(delay)
+                    last_error = exc
+                    continue
+                logger.error("OpenAI API error: %s", exc)
+                raise
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt < max_attempts:
+                    delay = 2.0 * attempt
+                    logger.warning(
+                        "OpenAI nomenclator transport error; retrying in %.1fs (%s/%s): %s",
+                        delay,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    time_module.sleep(delay)
+                    continue
+                logger.error("Error calling OpenAI API: %s", exc)
+                raise
+
+        raise RuntimeError(f"OpenAI API request failed after {max_attempts} attempts: {last_error}")
     
     def _parse_suggestions_response(
         self,

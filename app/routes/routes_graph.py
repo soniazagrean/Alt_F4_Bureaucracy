@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.dependencies.security import RBACRole, require_roles
-from app.services.graph_service import get_influence_network
+from app.services.graph_service import get_contract_network, get_influence_network
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,27 @@ async def get_influence_network_view(
 
         if isinstance(exc, (ServiceUnavailable, Neo4jError)):
             logger.error("Neo4j unavailable while fetching influence network: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="Neo4j service unavailable",
+            )
+        raise
+
+
+@router.get("/contract-network")
+async def get_contract_network_view(
+    _=Depends(require_roles(RBACRole.ADMIN, RBACRole.OPERATOR, RBACRole.AUDITOR)),
+) -> dict[str, Any]:
+    try:
+        return get_contract_network()
+    except Exception as exc:
+        try:
+            from neo4j.exceptions import ServiceUnavailable, Neo4jError
+        except ImportError:
+            ServiceUnavailable = Neo4jError = Exception
+
+        if isinstance(exc, (ServiceUnavailable, Neo4jError)):
+            logger.error("Neo4j unavailable while fetching contract network: %s", exc)
             raise HTTPException(
                 status_code=503,
                 detail="Neo4j service unavailable",

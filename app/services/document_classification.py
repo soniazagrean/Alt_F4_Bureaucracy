@@ -3,6 +3,7 @@
 
 import json
 import base64
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 import logging
@@ -117,12 +118,49 @@ REGULI:
             "temperature": 0.0,  # deterministic — classification should not vary
             "max_tokens": 256,  # classification response is tiny
         }
-        with httpx.Client() as client:
-            resp = client.post(
-                self.base_url, json=payload, headers=headers, timeout=30.0
-            )
-            resp.raise_for_status()
-            return resp.json()
+        max_attempts = 3
+        last_error = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client() as client:
+                    resp = client.post(
+                        self.base_url, json=payload, headers=headers, timeout=30.0
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code in {429, 500, 502, 503, 504} and attempt < max_attempts:
+                    retry_after = exc.response.headers.get("Retry-After") if exc.response is not None else None
+                    delay = float(retry_after) if retry_after and retry_after.isdigit() else 2.0 * attempt
+                    logger.warning(
+                        "OpenAI classification request failed with %s; retrying in %.1fs (%s/%s)",
+                        status_code,
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    time.sleep(delay)
+                    last_error = exc
+                    continue
+                raise
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt < max_attempts:
+                    delay = 2.0 * attempt
+                    logger.warning(
+                        "OpenAI classification transport error; retrying in %.1fs (%s/%s): %s",
+                        delay,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+
+        raise RuntimeError(f"OpenAI classification request failed after {max_attempts} attempts: {last_error}")
 
     # ------------------------------------------------------------------ parser
 

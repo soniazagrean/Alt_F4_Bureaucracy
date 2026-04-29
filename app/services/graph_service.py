@@ -173,6 +173,127 @@ def get_influence_network(min_admin_companies: int = 3) -> Dict[str, list[Dict[s
     }
 
 
+def get_contract_network() -> Dict[str, list[Dict[str, Any]]]:
+    query = """
+    MATCH (doc:Document)
+    OPTIONAL MATCH (doc)-[:EMIS_DE]->(f:Furnizor)
+    OPTIONAL MATCH (doc)-[:APARTINE]->(dos:Dosar)
+    OPTIONAL MATCH (dos)-[:IN_CATEGORY]->(n:NomenclatorEntry)
+    RETURN doc AS doc, f AS furnizor, dos AS dosar, n AS nomenclator
+    ORDER BY doc.id
+    """
+
+    with get_neo4j_session() as session:
+        records = session.execute_read(
+            lambda tx: list(
+                tx.run(
+                    query,
+                    timeout=NEO4J_QUERY_TIMEOUT_SEC,
+                )
+            )
+        )
+
+    nodes: Dict[str, Dict[str, Any]] = {}
+    edges: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+
+    for record in records:
+        doc = record.get("doc")
+        furnizor = record.get("furnizor")
+        dosar = record.get("dosar")
+        nomenclator = record.get("nomenclator")
+
+        doc_id = _neo4j_element_id(doc)
+        if not doc_id:
+            continue
+
+        doc_props = _to_dict(doc) or {}
+        doc_label = _label_from_props(doc_props, ["nr_factura", "title", "document_number", "id"], f"Document {doc_id[-6:]}")
+        nodes.setdefault(
+            doc_id,
+            {
+                "id": doc_id,
+                "label": doc_label,
+                "type": "Document",
+                "properties": doc_props,
+            },
+        )
+
+        if furnizor:
+            furnizor_id = _neo4j_element_id(furnizor) or _clean_value(_to_dict(furnizor).get("CUI") if _to_dict(furnizor) else None)
+            furnizor_props = _to_dict(furnizor) or {}
+            if furnizor_id:
+                nodes.setdefault(
+                    furnizor_id,
+                    {
+                        "id": furnizor_id,
+                        "label": _label_from_props(furnizor_props, ["name", "CUI", "id"], f"Furnizor {furnizor_id[-6:]}") ,
+                        "type": "Furnizor",
+                        "properties": furnizor_props,
+                    },
+                )
+                edges.setdefault(
+                    (doc_id, furnizor_id, REL_EMIS_DE),
+                    {
+                        "id": f"{doc_id}->{furnizor_id}:EMIS_DE",
+                        "source": doc_id,
+                        "target": furnizor_id,
+                        "type": REL_EMIS_DE,
+                        "label": REL_EMIS_DE,
+                    },
+                )
+
+        if dosar:
+            dosar_id = _neo4j_element_id(dosar)
+            dosar_props = _to_dict(dosar) or {}
+            if dosar_id:
+                nodes.setdefault(
+                    dosar_id,
+                    {
+                        "id": dosar_id,
+                        "label": _label_from_props(dosar_props, ["name", "title", "id"], f"Dosar {dosar_id[-6:]}") ,
+                        "type": "Dosar",
+                        "properties": dosar_props,
+                    },
+                )
+                edges.setdefault(
+                    (doc_id, dosar_id, REL_APARTINE),
+                    {
+                        "id": f"{doc_id}->{dosar_id}:APARTINE",
+                        "source": doc_id,
+                        "target": dosar_id,
+                        "type": REL_APARTINE,
+                        "label": REL_APARTINE,
+                    },
+                )
+
+        if dosar and nomenclator:
+            dosar_id = _neo4j_element_id(dosar)
+            nomen_id = _neo4j_element_id(nomenclator)
+            nomen_props = _to_dict(nomenclator) or {}
+            if nomen_id:
+                nodes.setdefault(
+                    nomen_id,
+                    {
+                        "id": nomen_id,
+                        "label": _label_from_props(nomen_props, ["code", "name", "id"], f"Nomenclator {nomen_id[-6:]}") ,
+                        "type": "NomenclatorEntry",
+                        "properties": nomen_props,
+                    },
+                )
+                edges.setdefault(
+                    (dosar_id, nomen_id, REL_IN_CATEGORY),
+                    {
+                        "id": f"{dosar_id}->{nomen_id}:IN_CATEGORY",
+                        "source": dosar_id,
+                        "target": nomen_id,
+                        "type": REL_IN_CATEGORY,
+                        "label": REL_IN_CATEGORY,
+                    },
+                )
+
+    return {"nodes": list(nodes.values()), "edges": list(edges.values())}
+
+
 def _to_dict(node: Any) -> Optional[Dict[str, Any]]:
     if node is None:
         return None

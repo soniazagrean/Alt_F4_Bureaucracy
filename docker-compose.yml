@@ -33,11 +33,11 @@ services:
       - neo4j_data:/data
       - neo4j_logs:/logs
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u ${NEO4J_AUTH_USER:-neo4j} -p ${NEO4J_AUTH_PASSWORD:-password} \"RETURN 1\" || exit 1"]
+      test: ["CMD-SHELL", "wget -O /dev/null -q http://localhost:7474 || exit 1"]
       interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 90s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
     networks:
       - alt-network
 

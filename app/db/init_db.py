@@ -11,24 +11,62 @@ def seed_initial_data():
     db = SessionLocal()
 
     try:
-        # Check if admin user already exists
+        # ── Demo users (one per RBAC tier) ──────────────────────────────────
+        # ADMIN tier  → admin / system
+        # OPERATOR tier → archivist / inspector
+        # AUDITOR tier  → viewer
+        demo_users = [
+            {
+                "username": "admin",
+                "email": "admin@nexusvault.ro",
+                "full_name": "System Administrator",
+                "role": RoleEnum.ADMIN,
+                "password": "admin123",
+            },
+            {
+                "username": "archivist",
+                "email": "archivist@nexusvault.ro",
+                "full_name": "Demo Archivist",
+                "role": RoleEnum.ARCHIVIST,
+                "password": "archivist123",
+            },
+            {
+                "username": "inspector",
+                "email": "inspector@nexusvault.ro",
+                "full_name": "Demo Inspector",
+                "role": RoleEnum.INSPECTOR,
+                "password": "inspector123",
+            },
+            {
+                "username": "viewer",
+                "email": "viewer@nexusvault.ro",
+                "full_name": "Demo Viewer",
+                "role": RoleEnum.VIEWER,
+                "password": "viewer123",
+            },
+        ]
+
+        for u in demo_users:
+            existing = db.query(User).filter(User.username == u["username"]).first()
+            if not existing:
+                print(f"Creating {u['username']} user...")
+                new_user = User(
+                    username=u["username"],
+                    email=u["email"],
+                    full_name=u["full_name"],
+                    role=u["role"],
+                    is_verified=True,
+                    is_active=True,
+                )
+                new_user.set_password(u["password"])
+                db.add(new_user)
+                db.commit()
+                print(f"✓ {u['username']} user created (role={u['role'].value})")
+            else:
+                print(f"✓ {u['username']} user already exists")
+
+        # Keep a reference to admin for later steps that need it
         admin = db.query(User).filter(User.username == "admin").first()
-        if not admin:
-            print("Creating admin user...")
-            admin = User(
-                username="admin",
-                email="admin@nexusvault.ro",
-                full_name="System Administrator",
-                role=RoleEnum.ADMIN,
-                is_verified=True,
-                is_active=True
-            )
-            admin.set_password("admin123")  # Change this in production!
-            db.add(admin)
-            db.commit()
-            print("✓ Admin user created")
-        else:
-            print("✓ Admin user already exists")
 
         # Check if root nomenclator entry exists
         root = db.query(NomenclatorEntry).filter(NomenclatorEntry.code == "ROOT").first()

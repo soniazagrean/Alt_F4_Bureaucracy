@@ -23,7 +23,7 @@ st.set_page_config(page_title="View Documents", page_icon="📄", layout="wide")
 # Configuration
 API_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://localhost:8000")
 
-st.title("View Documents")
+st.title("📂 View Documents")
 st.markdown("Search, filter, and view processed documents with extracted data.")
 
 st.markdown(
@@ -75,6 +75,10 @@ st.markdown(
                   letter-spacing: .07em; margin-bottom: 5px; opacity: .75; }
     .anaf-main  { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
     .anaf-field { font-size: 12px; margin: 2px 0; opacity: .85; }
+    /* Search result border-left accent */
+    .result-risk   { border-left: 3px solid #ef4444; padding-left: 10px; }
+    .result-review { border-left: 3px solid #f59e0b; padding-left: 10px; }
+    .result-ok     { border-left: 3px solid #22c55e; padding-left: 10px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -199,25 +203,37 @@ if "auth_token" not in st.session_state:
     st.session_state.auth_token = None
     st.session_state.username = None
 
+_view_err = st.session_state.get("_login_error", "")
+_view_locked = "locked" in _view_err.lower()
+
 if st.session_state.auth_token:
-    # Logged-in state
-    st.sidebar.info(f"Logged in: **{st.session_state.username}**")
-    if st.sidebar.button("Logout"):
+    st.sidebar.success(f"✅ **{st.session_state.username}**")
+    if st.sidebar.button("Logout", use_container_width=True):
         st.session_state.auth_token = None
         st.session_state.username = None
         st.session_state.pop("_login_error", None)
         st.rerun()
 else:
-    # Show stored login error above the form so it is always visible
-    if st.session_state.get("_login_error"):
-        st.sidebar.error(st.session_state["_login_error"])
+    # --- lockout / error banner shown ABOVE the form ---
+    if _view_locked:
+        st.sidebar.warning(_view_err)
+        st.sidebar.caption(
+            "⏳ Your account is temporarily locked. "
+            "Wait for the lockout period to expire, then try again."
+        )
+    elif _view_err:
+        st.sidebar.error(_view_err)
 
+    # Login form — disabled while account is locked
     with st.sidebar.form("login_form_view"):
-        username = st.text_input("Username", placeholder="admin")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login", use_container_width=True)
+        username = st.text_input("Username", placeholder="admin", disabled=_view_locked)
+        password = st.text_input("Password", type="password", disabled=_view_locked)
+        _btn_label = "🔒 Account Locked" if _view_locked else "Login"
+        submitted = st.form_submit_button(
+            _btn_label, use_container_width=True, disabled=_view_locked,
+        )
 
-    if submitted:
+    if submitted and not _view_locked:
         st.session_state.pop("_login_error", None)
         try:
             response = requests.post(

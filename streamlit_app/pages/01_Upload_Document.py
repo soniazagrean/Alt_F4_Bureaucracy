@@ -18,7 +18,30 @@ import json
 # Page config
 st.set_page_config(page_title="Upload Document", page_icon="📄", layout="wide")
 
-st.title("Upload Document")
+st.markdown("""
+<style>
+/* Upload page polish */
+.upload-card {
+    background: linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
+    border:1px solid #334155; border-radius:14px; padding:18px 20px; margin-bottom:10px;
+}
+.lock-banner {
+    background:#3b1212; border:1px solid #ef4444; border-radius:10px;
+    padding:10px 16px; color:#fca5a5; font-weight:600; font-size:14px;
+    margin-bottom:8px;
+}
+.lock-banner .icon { font-size:20px; margin-right:8px; }
+.status-step {
+    display:flex; align-items:center; gap:10px; padding:6px 0;
+    font-size:14px;
+}
+.step-done  { color:#22c55e; }
+.step-cur   { color:#38bdf8; }
+.step-wait  { color:#475569; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📄 Upload Document")
 st.markdown("Upload PDF documents for processing and monitor their status in real-time.")
 
 # Configuration
@@ -36,26 +59,37 @@ if "auth_token" not in st.session_state:
     st.session_state.auth_token = None
     st.session_state.username = None
 
+_upload_err = st.session_state.get("_login_error_upload", "")
+_upload_locked = "locked" in _upload_err.lower()
+
 if st.session_state.auth_token:
-    # Logged-in state
-    st.sidebar.info(f"Logged in: **{st.session_state.username}**")
-    if st.sidebar.button("Logout"):
+    st.sidebar.success(f"✅ **{st.session_state.username}**")
+    if st.sidebar.button("Logout", use_container_width=True):
         st.session_state.auth_token = None
         st.session_state.username = None
         st.session_state.pop("_login_error_upload", None)
         st.rerun()
 else:
-    # Show error above form (rendered before the form widget)
-    if st.session_state.get("_login_error_upload"):
-        st.sidebar.error(st.session_state["_login_error_upload"])
+    # --- lockout / error banner shown ABOVE the form ---
+    if _upload_locked:
+        st.sidebar.warning(_upload_err)
+        st.sidebar.caption(
+            "⏳ Your account is temporarily locked. "
+            "Wait for the lockout period to expire, then try again."
+        )
+    elif _upload_err:
+        st.sidebar.error(_upload_err)
 
-    # Login form — only shown when not authenticated
+    # Login form — disabled while account is locked
     with st.sidebar.form("login_form_upload"):
-        username = st.text_input("Username", placeholder="admin")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login", use_container_width=True)
+        username = st.text_input("Username", placeholder="admin", disabled=_upload_locked)
+        password = st.text_input("Password", type="password", disabled=_upload_locked)
+        _btn_label = "🔒 Account Locked" if _upload_locked else "Login"
+        submitted = st.form_submit_button(
+            _btn_label, use_container_width=True, disabled=_upload_locked,
+        )
 
-    if submitted:
+    if submitted and not _upload_locked:
         st.session_state.pop("_login_error_upload", None)
         try:
             response = requests.post(

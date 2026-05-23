@@ -38,28 +38,55 @@ st.set_page_config(page_title="Graph Intelligence", page_icon="\U0001f578", layo
 
 st.markdown("""
 <style>
+@keyframes fadeInUp { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
+@keyframes shimmer  { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+
+.page-hero {
+    background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 55%,#0f172a 100%);
+    border:1px solid #1e40af; border-radius:18px;
+    padding:22px 28px; margin-bottom:18px;
+    animation: fadeInUp .5s ease;
+}
+.page-hero-title { font-size:24px; font-weight:800; color:#f1f5f9; margin:0; }
+.page-hero-sub   { font-size:13px; color:#94a3b8; margin-top:4px; }
+
 .legend-row { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 0; }
 .legend-item {
     display:inline-flex; align-items:center; gap:6px;
     background:#1e293b; border:1px solid #334155;
     border-radius:20px; padding:3px 10px;
     font-size:12px; color:#e2e8f0;
+    transition:border-color .15s;
 }
+.legend-item:hover { border-color:#38bdf8; }
 .legend-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+
 .search-banner {
-    background: linear-gradient(90deg, #1e3a5f 0%, #1e293b 100%);
-    border: 1px solid #3b82f6; border-radius: 10px;
-    padding: 8px 16px; margin-bottom: 12px;
-    color: #bfdbfe; font-size: 14px;
+    background:linear-gradient(90deg,#1e3a5f 0%,#1e293b 50%,#1e3a5f 100%);
+    background-size:200% 100%;
+    border:1px solid #3b82f6; border-radius:12px;
+    padding:10px 18px; margin-bottom:14px;
+    color:#bfdbfe; font-size:14px; font-weight:500;
+    animation: shimmer 4s linear infinite;
 }
+
+section[data-testid="stSidebar"] { background:#0f172a !important; }
+section[data-testid="stSidebar"] * { color:#cbd5e1 !important; }
+.stButton > button {
+    border-radius:10px !important; font-weight:600 !important;
+    transition:transform .15s, box-shadow .15s !important;
+}
+.stButton > button:hover { transform:translateY(-1px) !important; box-shadow:0 4px 12px rgba(0,0,0,.35) !important; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("\U0001f578 Graph Intelligence")
-st.caption(
-    "Inspect the **Contract network** or **Influence graph** from Neo4j. "
-    "Type a keyword in **Semantic Search** to focus on matching nodes and their neighbours."
-)
+st.markdown("""
+<div class="page-hero">
+  <div class="page-hero-title">\U0001f578 Graph Intelligence</div>
+  <div class="page-hero-sub">Inspect the <strong>Contract network</strong> or <strong>Influence graph</strong> from Neo4j.
+  Use <strong>Semantic Search</strong> to focus on matching nodes and their direct neighbours.</div>
+</div>
+""", unsafe_allow_html=True)
 
 # ── Auth guard ──────────────────────────────────────────────────────────────────
 if not st.session_state.get("auth_token"):
@@ -219,14 +246,12 @@ def _build_nodes(nodes: list[dict], matched_ids: set[str]) -> list[Node]:
             color = COL.get(ntype, COL["default"])
             size  = NODE_SIZE.get(ntype, 22)
 
-        node_font_color = "#E2E8F0" 
-        
         result.append(Node(
-            id=nid, 
-            label=label, 
-            color=color, 
+            id=nid,
+            label=label,
+            color=color,
             size=size,
-            font={"color": node_font_color, "size": 14} 
+            font={"color": "#FFFFFF", "size": 14, "strokeWidth": 3, "strokeColor": "#00000099"},
         ))
         
     return result
@@ -277,12 +302,27 @@ if search_query:
         unsafe_allow_html=True,
     )
 
-col_a, col_b, col_c = st.columns(3)
-col_a.metric("\U0001f4cd Nodes", len(nodes),
-             delta=f"-{len(raw_nodes)-len(nodes)}" if search_query and len(raw_nodes) != len(nodes) else None)
-col_b.metric("\U0001f517 Edges", len(edges))
 risk_count = sum(1 for n in nodes if n.get("type") == "Person" and n.get("risk"))
-col_c.metric("\u26a0\ufe0f Risk flags", risk_count if graph_mode == "Influence" else "—")
+_match_val = str(len(matched_ids)) if search_query else "—"
+_stats = [
+    ("📍", "Nodes", str(len(nodes))),
+    ("🔗", "Edges", str(len(edges))),
+    ("⚠️", "Risk flags", str(risk_count) if graph_mode == "Influence" else "—"),
+    ("🔍", "Search matches", _match_val),
+]
+_sc = st.columns(4)
+for _si, (_icon, _lbl, _val) in enumerate(_stats):
+    with _sc[_si]:
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid #334155;'
+            f'border-radius:12px;padding:14px 16px;text-align:center;'
+            f'animation:fadeInUp .4s ease both;animation-delay:{_si*0.07:.2f}s">'
+            f'<div style="font-size:22px">{_icon}</div>'
+            f'<div style="font-size:26px;font-weight:800;color:#38bdf8">{_val}</div>'
+            f'<div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-top:2px">{_lbl}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
 if search_query and not nodes:
     st.warning(f'No nodes matched "{search_query}". Try a broader keyword.')

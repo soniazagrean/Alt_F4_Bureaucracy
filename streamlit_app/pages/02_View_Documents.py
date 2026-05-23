@@ -23,66 +23,116 @@ st.set_page_config(page_title="View Documents", page_icon="📄", layout="wide")
 # Configuration
 API_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://localhost:8000")
 
-st.title("📂 View Documents")
-st.markdown("Search, filter, and view processed documents with extracted data.")
-
 st.markdown(
     """
     <style>
+    @keyframes fadeInUp   { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes slideIn    { from{opacity:0;transform:translateX(-10px)} to{opacity:1;transform:translateX(0)} }
+    @keyframes pulse-dot  { 0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.5)} 60%{box-shadow:0 0 0 8px rgba(34,197,94,0)} }
+    @keyframes shimmer    { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+    @keyframes blink      { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+    /* Page hero */
+    .page-hero {
+        background: linear-gradient(135deg,#0f172a 0%,#1e3a5f 55%,#0f172a 100%);
+        border:1px solid #1e40af; border-radius:18px;
+        padding:22px 28px; margin-bottom:18px;
+        animation: fadeInUp .5s ease;
+    }
+    .page-hero-title { font-size:24px; font-weight:800; color:#f1f5f9; margin:0; }
+    .page-hero-sub   { font-size:13px; color:#94a3b8; margin-top:4px; }
+
+    /* Document hero card (detail view) */
     .doc-hero {
         background: linear-gradient(135deg, #f7f4ed 0%, #eef6f2 100%);
         border: 1px solid #e4dccf;
         border-radius: 18px;
-        padding: 16px 18px;
-        margin-bottom: 16px;
-        color: #1f2937 !important;
+        padding: 18px 20px;
+        margin-bottom: 14px;
+        animation: fadeInUp .4s ease;
     }
+    .doc-hero { color: #1f2937 !important; }
     .doc-hero * { color: #1f2937 !important; }
+
+    /* Status pills */
     .status-pill {
-        display: inline-block;
-        padding: 4px 10px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
+        display:inline-block; padding:4px 12px; border-radius:999px;
+        font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
     }
-    .status-pill.good { background: #d9f5e5; color: #0b5f3b; border: 1px solid #a7e2c3; }
-    .status-pill.warn { background: #fff4cc; color: #8a5b00; border: 1px solid #f5d08b; }
-    .status-pill.bad { background: #ffe1df; color: #8a1f17; border: 1px solid #f4b1aa; }
+    .status-pill.good { background:#d1fae5; color:#065f46; border:1px solid #6ee7b7; }
+    .status-pill.warn { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; animation:blink 2s ease infinite; }
+    .status-pill.bad  { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
+    .status-pill.info { background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; animation:blink 1.5s ease infinite; }
+
+    /* Search result cards */
+    .doc-card {
+        border-radius:12px; padding:14px 16px;
+        background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
+        border:1px solid #334155; margin-bottom:6px;
+        transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+        animation: fadeInUp .35s ease both;
+    }
+    .doc-card:hover {
+        transform:translateY(-2px);
+        border-color:#3b82f6;
+        box-shadow:0 6px 20px rgba(59,130,246,.15);
+    }
+    .doc-card-title  { font-size:15px; font-weight:700; color:#f1f5f9; }
+    .doc-card-meta   { font-size:12px; color:#64748b; margin-top:3px; }
+    .doc-card-badges { margin-top:6px; display:flex; flex-wrap:wrap; gap:5px; }
+    .badge {
+        display:inline-block; padding:2px 9px; border-radius:8px;
+        font-size:11px; font-weight:600;
+    }
+    .badge-type     { background:#1e3a5f; color:#7dd3fc; border:1px solid #2563eb; }
+    .badge-archived { background:#052e16; color:#4ade80; border:1px solid #16a34a; }
+    .badge-review   { background:#422006; color:#fb923c; border:1px solid #c2410c; }
+    .badge-returned { background:#450a0a; color:#f87171; border:1px solid #b91c1c; }
+    .badge-default  { background:#1e293b; color:#94a3b8; border:1px solid #475569; }
+    .badge-fraud    { background:#450a0a; color:#fca5a5; border:1px solid #b91c1c; }
+
+    /* Meta chips */
     .meta-chip {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 10px;
-        border: 1px solid #e6e1d5;
-        background: #fffdf7;
-        font-size: 12px;
-        color: #5a5447;
-        margin-right: 6px;
-        margin-top: 6px;
+        display:inline-block; padding:2px 8px; border-radius:10px;
+        border:1px solid #e6e1d5; background:#fffdf7;
+        font-size:12px; color:#5a5447; margin-right:6px; margin-top:6px;
     }
-    .anaf-card {
-        border-radius: 10px;
-        padding: 12px 15px;
-        margin: 8px 0 12px 0;
-        border-left: 5px solid;
+
+    /* ANAF cards */
+    .anaf-card { border-radius:10px; padding:12px 15px; margin:8px 0 12px; border-left:5px solid; }
+    .anaf-card.active   { background:#d9f5e5; border-color:#22c55e; color:#064e2b; }
+    .anaf-card.inactive { background:#ffe1df; border-color:#ef4444; color:#7f1d1d; }
+    .anaf-card.notfound { background:#fef9c3; border-color:#eab308; color:#713f12; }
+    .anaf-card.unavail  { background:#f3f4f6; border-color:#9ca3af; color:#4b5563; }
+    .anaf-title { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.07em; margin-bottom:5px; opacity:.75; }
+    .anaf-main  { font-size:14px; font-weight:700; margin-bottom:4px; }
+    .anaf-field { font-size:12px; margin:2px 0; opacity:.85; }
+
+    /* Result search row accent */
+    .result-risk   { border-left:3px solid #ef4444; padding-left:10px; }
+    .result-review { border-left:3px solid #f59e0b; padding-left:10px; }
+    .result-ok     { border-left:3px solid #22c55e; padding-left:10px; }
+
+    /* Streamlit global tweaks */
+    section[data-testid="stSidebar"] { background:#0f172a !important; }
+    section[data-testid="stSidebar"] * { color:#cbd5e1 !important; }
+    .stButton > button {
+        border-radius:10px !important; font-weight:600 !important;
+        transition:transform .15s, box-shadow .15s !important;
     }
-    .anaf-card.active   { background: #d9f5e5; border-color: #22c55e; color: #064e2b; }
-    .anaf-card.inactive { background: #ffe1df; border-color: #ef4444; color: #7f1d1d; }
-    .anaf-card.notfound { background: #fef9c3; border-color: #eab308; color: #713f12; }
-    .anaf-card.unavail  { background: #f3f4f6; border-color: #9ca3af; color: #4b5563; }
-    .anaf-title { font-size: 11px; font-weight: 800; text-transform: uppercase;
-                  letter-spacing: .07em; margin-bottom: 5px; opacity: .75; }
-    .anaf-main  { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
-    .anaf-field { font-size: 12px; margin: 2px 0; opacity: .85; }
-    /* Search result border-left accent */
-    .result-risk   { border-left: 3px solid #ef4444; padding-left: 10px; }
-    .result-review { border-left: 3px solid #f59e0b; padding-left: 10px; }
-    .result-ok     { border-left: 3px solid #22c55e; padding-left: 10px; }
+    .stButton > button:hover { transform:translateY(-1px) !important; box-shadow:0 4px 12px rgba(0,0,0,.35) !important; }
+    .stTabs [data-baseweb="tab"] { font-weight:600 !important; }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+st.markdown("""
+<div class="page-hero">
+  <div class="page-hero-title">\U0001f4c2 View Documents</div>
+  <div class="page-hero-sub">Search, filter, review and archive processed documents. Open a document for the full detail view.</div>
+</div>
+""", unsafe_allow_html=True)
 
 # Helper functions
 
@@ -197,7 +247,7 @@ def _format_relation_label(relation_type: str) -> str:
 # SIDEBAR - Authentication & Filters
 # ============================================================================
 
-st.sidebar.markdown("## Authentication")
+st.sidebar.markdown("### 🔑 Authentication")
 
 if "auth_token" not in st.session_state:
     st.session_state.auth_token = None
@@ -1470,7 +1520,7 @@ if st.session_state.auth_token:
             st.error(f"Error: {str(e)}")
     
     else:
-        search_tab, archive_tab = st.tabs(["Document Search", "Archive Browser"])
+        search_tab, archive_tab = st.tabs(["🔍 Document Search", "📁 Archive Browser"])
 
         with search_tab:
             col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
@@ -1530,7 +1580,7 @@ if st.session_state.auth_token:
                 search_params["data_start"] = f"{year}-01-01"
                 search_params["data_end"] = f"{year}-12-31"
 
-            if st.button("Search", type="primary", use_container_width=True):
+            if st.button("🔍 Search Documents", type="primary", use_container_width=True):
                 try:
                     with st.spinner("Searching documents..."):
                         response = requests.get(
@@ -1554,89 +1604,93 @@ if st.session_state.auth_token:
             if st.session_state.search_results:
                 hits = st.session_state.search_results.get("hits", [])
                 total = st.session_state.search_results.get("total_hits", 0)
-                st.markdown(f"### Results: {len(hits)} of {total} documents")
+                st.markdown(f"### 📄 {len(hits)} of {total} documents found")
 
-                with st.expander("🔍 Debug Search Info"):
-                    st.write(f"**Search params:** {search_params}")
-                    st.write(f"**Total found:** {total}")
-                    st.write(f"**Shown:** {len(hits)}")
-                    if not hits:
-                        st.warning("Try broader search or check that documents are indexed in Meilisearch")
+
+
+                _TYPE_ICON = {
+                    "invoice":"🧾","contract":"📋","report":"📊",
+                    "correspondence":"✉️","decision":"⚖️",
+                    "protocol":"📝","adresa":"📨","hcl":"📜",
+                }
+                _STATUS_BADGE = {
+                    "ARCHIVED":"badge-archived","APPROVED":"badge-archived",
+                    "REVIEW":"badge-review","RETURNED":"badge-returned",
+                    "ERROR":"badge-returned",
+                }
 
                 if hits:
-                    for doc in hits:
-                        with st.container(border=True):
-                            doc_id = doc.get("id", "N/A")
-                            doc_id_str = str(doc_id)
-                            title = doc.get("title", "Untitled")
-                            status = doc.get("status", "N/A")
-                            status_upper = str(status).upper()
-                            doc_type = doc.get("tip_document", "N/A")
-                            f_val = doc.get("fraud_score", 0.0) or 0.0
-                            if f_val > 0.7 or status_upper == "RETURNED":
-                                alert_text = "🚨 High risk of fraud" if f_val > 0.7 else "↩ Returned for correction"
-                                st.markdown(f"<p style='color:#ff4b4b; font-weight:bold; margin-bottom:5px;'>{alert_text}</p>", unsafe_allow_html=True)
-                            status_emoji = {
-                                "ARCHIVED": "📦",
-                                "APPROVED": "✅",
-                                "REVIEW": "🕵️",
-                                "RETURNED": "↩️",
-                                "PROCESSING": "🔄",
-                                "CLASSIFIED": "🏷️",
-                                "EXTRACTED": "🧾",
-                                "VALIDATED": "✓",
-                                "PENDING": "⏳",
-                                "ERROR": "❌",
-                            }
-                            col1, col2, col3, col4 = st.columns([2, 1, 1, 0.8])
-                            with col1:
-                                if st.button(
-                                    f"Document: {title}",
-                                    key=f"view_{doc_id_str}",
-                                    use_container_width=True,
-                                    type="secondary",
-                                ):
-                                    st.session_state.selected_doc_id = str(doc_id)
-                                    st.rerun()
-                                detail_bits = []
-                                doc_number = doc.get("invoice_number") or doc.get("nr_factura") or doc.get("document_number")
-                                if doc_number:
-                                    detail_bits.append(f"Invoice: {doc_number}")
-                                if doc.get("furnizor"):
-                                    detail_bits.append(f"Furnizor: {doc.get('furnizor')}")
-                                if doc.get("data"):
-                                    detail_bits.append(str(doc.get("data")))
-                                if detail_bits:
-                                    st.caption(" · ".join(detail_bits))
-                            with col2:
-                                st.write(f"{status_emoji.get(status_upper, '❓')} **{status_upper}**")
-                            with col3:
-                                st.write(f"**{doc_type}**")
-                            with col4:
-                                # Init delete flow for this hit
-                                if st.button("🗑️ Delete", key=f"del_init_hit_{doc_id_str}"):
-                                    st.session_state.delete_confirm_doc_id = str(doc_id)
-                                    st.rerun()
-                                if st.session_state.get("delete_confirm_doc_id") == str(doc_id):
-                                    st.warning("Confirm delete this document permanently?")
-                                    if st.button("Confirm", key=f"del_confirm_hit_{doc_id_str}"):
-                                        try:
-                                            del_resp = requests.delete(
-                                                f"{API_BASE_URL}/documents/{doc_id}",
-                                                headers=headers,
-                                                timeout=15,
-                                            )
-                                            if del_resp.status_code in [200, 202, 204]:
-                                                st.success("Document deleted.")
-                                                st.session_state.search_results = None
-                                                st.session_state.delete_confirm_doc_id = None
-                                                st.rerun()
-                                            else:
-                                                st.error(f"Delete failed: {del_resp.status_code} {del_resp.text[:200]}")
-                                        except Exception as e:
-                                            st.error(f"Error deleting document: {str(e)}")
+                    for _ci, doc in enumerate(hits):
+                        doc_id       = doc.get("id","N/A")
+                        doc_id_str   = str(doc_id)
+                        title        = doc.get("title") or "Untitled"
+                        status_upper = str(doc.get("status","N/A")).upper()
+                        dtype_raw    = str(doc.get("tip_document","other") or "other").lower()
+                        f_val        = float(doc.get("fraud_score") or 0.0)
+
+                        doc_number = (doc.get("invoice_number") or doc.get("nr_factura")
+                                      or doc.get("document_number") or "")
+                        furnizor   = doc.get("furnizor") or ""
+                        doc_date   = doc.get("data") or ""
+                        amount_str = f"{doc['total']} RON" if doc.get("total") is not None else ""
+
+                        meta_parts = [x for x in [doc_number, furnizor, doc_date, amount_str] if x]
+                        meta_str   = " · ".join(meta_parts) or "No metadata"
+
+                        type_icon   = _TYPE_ICON.get(dtype_raw, "📄")
+                        status_cls  = _STATUS_BADGE.get(status_upper, "badge-default")
+                        fraud_badge = ('<span class="badge badge-fraud">🚨 Fraud risk</span>'
+                                       if f_val > 0.7 else "")
+
+                        st.markdown(
+                            f'<div class="doc-card" style="animation-delay:{_ci*0.04:.2f}s">'
+                            f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+                            f'  <span style="font-size:20px">{type_icon}</span>'
+                            f'  <span class="doc-card-title">{title}</span>'
+                            f'</div>'
+                            f'<div class="doc-card-badges">'
+                            f'  <span class="badge badge-type">{dtype_raw.upper()}</span>'
+                            f'  <span class="badge {status_cls}">{status_upper}</span>'
+                            f'  {fraud_badge}'
+                            f'</div>'
+                            f'<div class="doc-card-meta">{meta_str}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        _btn_c, _del_c = st.columns([5, 1])
+                        with _btn_c:
+                            if st.button(
+                                f"📂  {title[:70]}",
+                                key=f"view_{doc_id_str}",
+                                use_container_width=True,
+                                type="primary",
+                            ):
+                                st.session_state.selected_doc_id = str(doc_id)
+                                st.rerun()
+                        with _del_c:
+                            if st.button("🗑", key=f"del_init_hit_{doc_id_str}",
+                                         use_container_width=True, help="Delete"):
+                                st.session_state.delete_confirm_doc_id = str(doc_id)
+                                st.rerun()
+                            if st.session_state.get("delete_confirm_doc_id") == str(doc_id):
+                                st.warning("Delete permanently?")
+                                if st.button("Confirm", key=f"del_confirm_hit_{doc_id_str}"):
+                                    try:
+                                        del_resp = requests.delete(
+                                            f"{API_BASE_URL}/documents/{doc_id}",
+                                            headers=headers, timeout=15,
+                                        )
+                                        if del_resp.status_code in [200, 202, 204]:
+                                            st.success("Deleted.")
+                                            st.session_state.search_results = None
+                                            st.session_state.delete_confirm_doc_id = None
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Delete failed: {del_resp.status_code}")
+                                    except Exception as e:
+                                        st.error(f"Error: {str(e)}")
                 else:
-                    st.info("No documents found matching your search criteria")
+                    st.info("🔍 No documents found. Try a broader search or clear the filters.")
 
         with archive_tab:
             st.markdown("### Archive Folder Browser")

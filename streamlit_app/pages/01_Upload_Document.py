@@ -20,29 +20,75 @@ st.set_page_config(page_title="Upload Document", page_icon="📄", layout="wide"
 
 st.markdown("""
 <style>
-/* Upload page polish */
-.upload-card {
-    background: linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
-    border:1px solid #334155; border-radius:14px; padding:18px 20px; margin-bottom:10px;
+@keyframes fadeInUp   { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+@keyframes pulse-ring { 0%,100%{box-shadow:0 0 0 0 rgba(56,189,248,.4)} 60%{box-shadow:0 0 0 10px rgba(56,189,248,0)} }
+@keyframes spin       { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+@keyframes bar-fill   { from{width:0} to{width:100%} }
+@keyframes blink      { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* Page header card */
+.page-hero {
+    background: linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#0f172a 100%);
+    border:1px solid #1e40af; border-radius:18px;
+    padding:24px 28px; margin-bottom:20px;
+    animation: fadeInUp .5s ease;
 }
-.lock-banner {
-    background:#3b1212; border:1px solid #ef4444; border-radius:10px;
-    padding:10px 16px; color:#fca5a5; font-weight:600; font-size:14px;
-    margin-bottom:8px;
+.page-hero-title { font-size:26px; font-weight:800; color:#f1f5f9; margin:0; }
+.page-hero-sub   { font-size:13px; color:#94a3b8; margin-top:4px; }
+
+/* Status pill */
+.status-pill {
+    display:inline-block; padding:3px 12px; border-radius:20px;
+    font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
 }
-.lock-banner .icon { font-size:20px; margin-right:8px; }
-.status-step {
-    display:flex; align-items:center; gap:10px; padding:6px 0;
-    font-size:14px;
+.pill-processing { background:#1e3a5f; color:#7dd3fc; border:1px solid #2563eb; animation:blink 1.5s ease infinite; }
+.pill-done       { background:#052e16; color:#4ade80; border:1px solid #16a34a; }
+.pill-error      { background:#450a0a; color:#f87171; border:1px solid #b91c1c; }
+.pill-review     { background:#422006; color:#fb923c; border:1px solid #c2410c; }
+
+/* Polling step row */
+.step-row { display:flex; align-items:center; gap:10px; padding:5px 0; font-size:13px; color:#94a3b8; }
+.step-row.done    { color:#4ade80; }
+.step-row.current { color:#38bdf8; }
+.step-icon { font-size:16px; width:22px; text-align:center; }
+
+/* Animated progress track */
+.prog-track {
+    height:6px; background:#1e293b; border-radius:999px; overflow:hidden; margin:8px 0 4px;
 }
-.step-done  { color:#22c55e; }
-.step-cur   { color:#38bdf8; }
-.step-wait  { color:#475569; }
+.prog-fill {
+    height:100%; border-radius:999px;
+    background:linear-gradient(90deg,#3b82f6,#38bdf8,#3b82f6);
+    background-size:200% 100%;
+    animation:bar-fill .6s ease forwards, shimmer 2s linear infinite;
+}
+@keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+
+/* Streamlit tweaks */
+section[data-testid="stSidebar"] { background:#0f172a !important; }
+section[data-testid="stSidebar"] * { color:#cbd5e1 !important; }
+.stButton > button {
+    border-radius:10px !important; font-weight:600 !important;
+    transition:transform .15s, box-shadow .15s !important;
+}
+.stButton > button:hover { transform:translateY(-1px) !important; box-shadow:0 4px 14px rgba(0,0,0,.4) !important; }
+div[data-testid="stFileUploader"] {
+    border:2px dashed #334155 !important; border-radius:14px !important;
+    background:#0f172a !important; transition:border-color .2s !important;
+}
+div[data-testid="stFileUploader"]:hover { border-color:#3b82f6 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📄 Upload Document")
-st.markdown("Upload PDF documents for processing and monitor their status in real-time.")
+st.markdown("""
+<div class="page-hero">
+  <div class="page-hero-title">📄 Upload Document</div>
+  <div class="page-hero-sub">
+    Drag &amp; drop a PDF — AI will classify it, extract key fields, suggest an archive folder,
+    and route it for operator approval automatically.
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 # Configuration
 API_BASE_URL = os.getenv("FASTAPI_BASE_URL", "http://localhost:8000")
@@ -53,7 +99,7 @@ MAX_POLLING_TIME = 300  # 5 minutes
 # SIDEBAR - Authentication & Settings
 # ============================================================================
 
-st.sidebar.markdown("## Authentication")
+st.sidebar.markdown("### 🔑 Authentication")
 
 if "auth_token" not in st.session_state:
     st.session_state.auth_token = None
@@ -128,8 +174,8 @@ if st.session_state.auth_token:
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.subheader("Upload PDF")
-        
+        st.markdown("**📄 Upload PDF**")
+
         # File uploader with drag-and-drop
         uploaded_file = st.file_uploader(
             "Drag and drop your PDF here, or click to select",
@@ -138,10 +184,16 @@ if st.session_state.auth_token:
         )
         
         if uploaded_file:
-            st.write(f"File selected: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+            st.markdown(
+                f'<div style="background:#052e16;border:1px solid #16a34a;border-radius:10px;'
+                f'padding:8px 14px;font-size:13px;color:#4ade80;margin-top:4px">'
+                f'📄 <strong>{uploaded_file.name}</strong> &nbsp;\u00b7\u00a0 {uploaded_file.size/1024:.1f} KB'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
     
     with col2:
-        st.subheader("Options")
+        st.markdown("**⚙️ Options**")
         auto_archive = st.checkbox("Auto-archive after processing", value=True)
         create_node = st.checkbox("Create graph node", value=True)
     
@@ -177,15 +229,19 @@ if st.session_state.auth_token:
                     # ====================================================================
                     # STATUS MONITORING - Polling Section
                     # ====================================================================
-                    
-                    st.markdown("---")
-                    st.subheader("Processing Status")
-                    
+
+                    st.markdown("""
+<div style="background:linear-gradient(135deg,#0f172a,#1e293b);border:1px solid #334155;
+border-radius:14px;padding:16px 20px;margin:16px 0 8px;animation:fadeInUp .4s ease">
+  <div style="font-size:16px;font-weight:700;color:#f1f5f9">🔄 Processing Status</div>
+  <div style="font-size:12px;color:#64748b;margin-top:3px">Polling every 3s — updates automatically</div>
+</div>""", unsafe_allow_html=True)
+
                     # Create placeholders for dynamic updates
                     status_placeholder = st.empty()
                     progress_placeholder = st.empty()
                     details_placeholder = st.empty()
-                    
+
                     # Status mapping
                     status_colors = {
                         "PROCESSING": "🔄 blue",

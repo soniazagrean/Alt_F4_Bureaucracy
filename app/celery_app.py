@@ -702,6 +702,58 @@ def process_document_task(self, document_id: int, auto_archive: bool = False):
                 ))
             db.commit()
 
+        # ── ANAF Supplier Validation ───────────────────────────────────────
+        # Runs after extraction & nomenclator so all ExtractedData rows exist.
+        # Best-effort: any failure is logged and ignored — never blocks the pipeline.
+        try:
+            from app.services.graph_service import enrich_furnizor_with_anaf
+            from app.models.document import ExtractedData as _ED
+
+            _rows = db.query(_ED).filter(_ED.document_id == document_id).all()
+            _ext = {r.field_name.lower(): r.field_value for r in _rows}
+            _cui = _ext.get("cui") or _ext.get("cod_fiscal")
+            _furnizor_name = _ext.get("furnizor") or ""
+
+            if _cui:
+                discrepancy = enrich_furnizor_with_anaf(_cui, _furnizor_name)
+                anaf_alerts = []
+
+                if discrepancy.get("inactive_company"):
+                    anaf_alerts.append(FraudAlert(
+                        document_id=document_id,
+                        anomaly_type=AnomalyTypeEnum.TAMPERED_DATA,
+                        fraud_score=0.35,
+                        risk_level="high",
+                        description=(
+                            f"ANAF validation: supplier CUI {_cui} is INACTIVE "
+                            f"(official name: {discrepancy['anaf_data'].get('company_name', '?')})"
+                        ),
+                    ))
+
+                if discrepancy.get("name_mismatch"):
+                    sim_pct = int(discrepancy.get("name_similarity", 0) * 100)
+                    anaf_alerts.append(FraudAlert(
+                        document_id=document_id,
+                        anomaly_type=AnomalyTypeEnum.TAMPERED_DATA,
+                        fraud_score=0.25,
+                        risk_level="medium",
+                        description=(
+                            f"ANAF name mismatch: document says '{_furnizor_name}', "
+                            f"ANAF says '{discrepancy['anaf_data'].get('company_name', '?')}' "
+                            f"(similarity {sim_pct}%)"
+                        ),
+                    ))
+
+                if anaf_alerts:
+                    doc.fraud_score = min((doc.fraud_score or 0.0) + sum(a.fraud_score for a in anaf_alerts), 1.0)
+                    for _alert in anaf_alerts:
+                        db.add(_alert)
+                    db.commit()
+
+        except Exception as _anaf_exc:
+            logger.warning("ANAF validation step failed for doc %s: %s", document_id, _anaf_exc)
+        # ──────────────────────────────────────────────────────────────────
+
         previous_status = doc.status
         doc.status = DocumentStatusEnum.REVIEW
 

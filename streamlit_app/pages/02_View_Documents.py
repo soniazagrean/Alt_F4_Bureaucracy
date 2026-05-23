@@ -35,7 +35,9 @@ st.markdown(
         border-radius: 18px;
         padding: 16px 18px;
         margin-bottom: 16px;
+        color: #1f2937 !important;
     }
+    .doc-hero * { color: #1f2937 !important; }
     .status-pill {
         display: inline-block;
         padding: 4px 10px;
@@ -59,6 +61,20 @@ st.markdown(
         margin-right: 6px;
         margin-top: 6px;
     }
+    .anaf-card {
+        border-radius: 10px;
+        padding: 12px 15px;
+        margin: 8px 0 12px 0;
+        border-left: 5px solid;
+    }
+    .anaf-card.active   { background: #d9f5e5; border-color: #22c55e; color: #064e2b; }
+    .anaf-card.inactive { background: #ffe1df; border-color: #ef4444; color: #7f1d1d; }
+    .anaf-card.notfound { background: #fef9c3; border-color: #eab308; color: #713f12; }
+    .anaf-card.unavail  { background: #f3f4f6; border-color: #9ca3af; color: #4b5563; }
+    .anaf-title { font-size: 11px; font-weight: 800; text-transform: uppercase;
+                  letter-spacing: .07em; margin-bottom: 5px; opacity: .75; }
+    .anaf-main  { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    .anaf-field { font-size: 12px; margin: 2px 0; opacity: .85; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -316,10 +332,10 @@ if st.session_state.auth_token:
                 st.markdown(
                     f"""
                     <div class="doc-hero">
-                        <div style="font-size: 20px; font-weight: 700;">{doc_title}</div>
+                        <div style="font-size: 20px; font-weight: 700; color: #111827;">{doc_title}</div>
                         <div style="margin-top: 6px;">
                             <span class="status-pill {status_class}">{status_upper}</span>
-                            <span style="margin-left: 10px; color: #6b7280;">Created: {doc.get('created_at', 'N/A')}</span>
+                            <span style="margin-left: 10px; color: #4b5563;">Created: {doc.get('created_at', 'N/A')}</span>
                         </div>
                         <div style="margin-top: 8px; color: #4b5563;">
                             Type: {doc.get('document_type', 'N/A')} · Document ID: {doc_id if doc_id is not None else 'N/A'}
@@ -329,49 +345,162 @@ if st.session_state.auth_token:
                     unsafe_allow_html=True,
                 )
 
+                # ── ANAF banner – full width, visible immediately ──────────
+                _anaf = doc.get("anaf_validation") or {}
+                _extracted_map = doc.get("extracted_data_map") or {}
+                # Schema stores CUI uppercase (Pydantic model); fall back to lowercase
+                _cui_val = (_extracted_map.get("CUI") or _extracted_map.get("cui")
+                            or _extracted_map.get("COD_FISCAL") or _extracted_map.get("cod_fiscal"))
+                _furnizor_doc = (_extracted_map.get("furnizor") or _extracted_map.get("Furnizor") or "").strip()
+                _anaf_name = (_anaf.get("company_name") or "").strip()
+                _anaf_addr = (_anaf.get("address") or "").strip()
+                _anaf_reg  = (_anaf.get("registration_date") or "").strip()
+
+                if _cui_val or _anaf.get("found") is not None:
+                    from difflib import SequenceMatcher as _SM
+
+                    if _anaf.get("error") and not _anaf.get("found"):
+                        _cls = "unavail"; _icon = "⚠️"; _status_lbl = "ANAF UNAVAILABLE"
+                        _main = f"Service error: {_anaf.get('error','')}"
+                    elif not _anaf.get("found"):
+                        _cls = "notfound"; _icon = "❓"; _status_lbl = "NOT IN ANAF REGISTRY"
+                        _main = f"CUI {_cui_val} returned no results"
+                    elif not _anaf.get("is_active"):
+                        _cls = "inactive"; _icon = "🚨"; _status_lbl = "COMPANY INACTIVE"
+                        _main = _anaf_name or "Unknown company"
+                    else:
+                        _cls = "active"; _icon = "✅"; _status_lbl = "ACTIVE"
+                        _main = _anaf_name or "—"
+
+                    _cui_html  = f'<span class="anaf-field">&nbsp;·&nbsp;🔢 CUI: <b>{_cui_val}</b></span>' if _cui_val else ""
+                    _addr_html = f'<span class="anaf-field">&nbsp;·&nbsp;📍 {_anaf_addr}</span>' if _anaf_addr else ""
+                    _reg_html  = f'<span class="anaf-field">&nbsp;·&nbsp;📅 since {_anaf_reg}</span>' if _anaf_reg else ""
+
+                    st.markdown(
+                        f"""
+                        <div class="anaf-card {_cls}" style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;">
+                            <span class="anaf-title" style="margin:0;margin-right:8px;">🏛️ ANAF · {_status_lbl}</span>
+                            <span class="anaf-main" style="margin:0;">{_icon} {_main}</span>
+                            {_cui_html}{_addr_html}{_reg_html}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    # Name-mismatch warning
+                    if _cls == "active" and _furnizor_doc and _anaf_name:
+                        _sim = _SM(None, _furnizor_doc.upper(), _anaf_name.upper()).ratio()
+                        if _sim < 0.6:
+                            st.warning(
+                                f"⚠️ **Name mismatch** — document: `{_furnizor_doc}` "
+                                f"vs ANAF: `{_anaf_name}` ({int(_sim * 100)}% match)"
+                            )
+
+                    # Sidebar summary
+                    st.sidebar.markdown("---")
+                    st.sidebar.markdown("### 🏛️ ANAF Registry")
+                    if _cls == "active":
+                        st.sidebar.success(f"✅ Active  \n{_anaf_name[:35] or '—'}")
+                    elif _cls == "inactive":
+                        st.sidebar.error(f"🚨 INACTIVE  \n{_anaf_name[:35] or '—'}")
+                    elif _cls == "notfound":
+                        st.sidebar.warning("❓ Not found in registry")
+                    else:
+                        st.sidebar.caption("⚠️ ANAF service unavailable")
+                    if _cui_val:
+                        st.sidebar.caption(f"CUI: {_cui_val}")
+                    if _anaf_addr:
+                        st.sidebar.caption(f"📍 {_anaf_addr[:60]}")
+                # ────────────────────────────────────────────────────────────
+
                 st.divider()
 
                 preview_col, meta_col = st.columns([1.1, 1.9])
 
                 with preview_col:
                     st.markdown("### Quick Preview")
-                    preview_url = doc.get("preview_url")
-                    mime_type = doc.get("mime_type") or ""
-                    if preview_url and "pdf" in mime_type.lower():
-                        components.html(
-                            f"""
-                            <iframe
-                                src="{preview_url}"
-                                width="100%"
-                                height="480"
-                                style="border: 1px solid #e5e7eb; border-radius: 12px;"
-                            ></iframe>
-                            """,
-                            height=500,
+                    # Always use the FastAPI page-image proxy rather than a direct
+                    # MinIO presigned URL. The proxy fetches via the internal Docker
+                    # hostname (minio:9000) and streams PNG bytes — no browser-to-MinIO
+                    # direct connection needed, which fixes the "random text" iframe issue.
+                    _pages = doc.get("pages", [])
+                    _preview_shown = False
+
+                    _IN_PROGRESS_STATUSES = {
+                        "pending", "uploaded", "processing", "classified", "extracted"
+                    }
+                    _preview_err = None
+
+                    if doc_id and _pages:
+                        _pages_with_img = sorted(
+                            [p for p in _pages if p.get("image_path")],
+                            key=lambda p: p.get("page_number", 99),
                         )
-                        st.caption("Preview link is time-limited and may expire.")
-                    elif preview_url and "image" in mime_type.lower():
-                        st.image(preview_url, use_container_width=True, caption="Preview")
-                    else:
-                        pages = doc.get("pages", [])
-                        first_page_num = None
-                        if pages:
-                            first_page_num = sorted(pages, key=lambda p: p.get("page_number", 1))[0].get("page_number", 1)
-                        if doc_id and first_page_num:
+                        if _pages_with_img:
+                            _pnum = _pages_with_img[0].get("page_number", 0)
                             try:
-                                img_response = requests.get(
-                                    f"{API_BASE_URL}/documents/{doc_id}/page-image/{first_page_num}",
+                                _img_resp = requests.get(
+                                    f"{API_BASE_URL}/documents/{doc_id}/page-image/{_pnum}",
                                     headers=headers,
                                     timeout=10,
                                 )
-                                if img_response.status_code == 200:
-                                    st.image(img_response.content, use_container_width=True, caption="Page 1")
+                                if _img_resp.status_code == 200:
+                                    st.image(
+                                        _img_resp.content,
+                                        use_column_width=True,
+                                        caption=f"Page {_pnum + 1} preview",
+                                    )
+                                    _preview_shown = True
                                 else:
-                                    st.info("Preview not available yet (processing in progress).")
-                            except Exception:
-                                st.info("Preview not available yet (processing in progress).")
+                                    _preview_err = f"Image endpoint returned {_img_resp.status_code}"
+                            except Exception as _pe:
+                                _preview_err = str(_pe)
+
+                    if not _preview_shown:
+                        _doc_status = (doc.get("status") or "").lower()
+                        if _doc_status in _IN_PROGRESS_STATUSES:
+                            st.info(f"⏳ Document is still being processed ({_doc_status.upper()}) — preview will appear once ready.")
+                        elif _preview_err:
+                            st.error(f"Preview error: {_preview_err}")
+                            if st.button("⚙️ Reprocess Document", key=f"reprocess_{doc_id}"):
+                                _rp = requests.post(
+                                    f"{API_BASE_URL}/documents/{doc_id}/process",
+                                    headers=headers, timeout=15,
+                                )
+                                if _rp.status_code in (200, 202):
+                                    st.success("✅ Reprocessing started! Refresh in ~30 seconds.")
+                                else:
+                                    st.error(f"Failed ({_rp.status_code})")
                         else:
-                            st.info("Preview not available yet (processing in progress).")
+                            st.warning("🔄 No preview available. This document may need to be reprocessed.")
+                            if st.button("⚙️ Reprocess Document", key=f"reprocess_{doc_id}"):
+                                _rp = requests.post(
+                                    f"{API_BASE_URL}/documents/{doc_id}/process",
+                                    headers=headers, timeout=15,
+                                )
+                                if _rp.status_code in (200, 202):
+                                    st.success("✅ Reprocessing started! Refresh in ~30 seconds.")
+                                else:
+                                    st.error(f"Failed ({_rp.status_code})")
+
+                    # Download button for the original PDF
+                    if doc_id:
+                        try:
+                            _pdf_dl = requests.get(
+                                f"{API_BASE_URL}/documents/{doc_id}/download",
+                                headers=headers,
+                                timeout=30,
+                            )
+                            if _pdf_dl.status_code == 200:
+                                st.download_button(
+                                    label="⬇️ Download original PDF",
+                                    data=_pdf_dl.content,
+                                    file_name=f"{doc.get('title', 'document')}.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True,
+                                )
+                        except Exception:
+                            pass
 
                 with meta_col:
                     st.markdown("### Metadata & Workflow")
@@ -432,20 +561,101 @@ if st.session_state.auth_token:
                     f_score = doc.get("fraud_score", 0.0) or 0.0
                     st.progress(f_score, text=f"Overall Fraud Score: {f_score*100:.1f}%")
 
+                    # ── ANAF Supplier Validation card ─────────────────────
+                    _anaf = doc.get("anaf_validation") or {}
+                    _extracted_map = doc.get("extracted_data_map") or {}
+                    _cui_val = _extracted_map.get("cui") or _extracted_map.get("cod_fiscal")
+                    _furnizor_doc = (_extracted_map.get("furnizor") or "").strip()
+                    _anaf_name = (_anaf.get("company_name") or "").strip()
+                    _anaf_addr = (_anaf.get("address") or "").strip()
+                    _anaf_reg  = (_anaf.get("registration_date") or "").strip()
+
+                    if _cui_val or _anaf:
+                        from difflib import SequenceMatcher as _SM
+
+                        if _anaf.get("error") and not _anaf.get("found"):
+                            _cls = "unavail"; _icon = "⚠️"; _status_lbl = "ANAF UNAVAILABLE"
+                            _main = f"Service error: {_anaf.get('error','')}"
+                        elif not _anaf.get("found"):
+                            _cls = "notfound"; _icon = "❓"; _status_lbl = "NOT IN ANAF REGISTRY"
+                            _main = f"CUI {_cui_val} returned no results"
+                        elif not _anaf.get("is_active"):
+                            _cls = "inactive"; _icon = "🚨"; _status_lbl = "COMPANY INACTIVE"
+                            _main = _anaf_name or "Unknown company"
+                        else:
+                            _cls = "active"; _icon = "✅"; _status_lbl = "ACTIVE"
+                            _main = _anaf_name or "—"
+
+                        _cui_html  = f'<div class="anaf-field">🔢 CUI: <b>{_cui_val}</b></div>' if _cui_val else ""
+                        _addr_html = f'<div class="anaf-field">📍 {_anaf_addr}</div>' if _anaf_addr else ""
+                        _reg_html  = f'<div class="anaf-field">📅 Active since: {_anaf_reg}</div>' if _anaf_reg else ""
+
+                        st.markdown(
+                            f"""
+                            <div class="anaf-card {_cls}">
+                                <div class="anaf-title">🏛️ ANAF Romania · {_status_lbl}</div>
+                                <div class="anaf-main">{_icon} {_main}</div>
+                                {_cui_html}{_addr_html}{_reg_html}
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                        # Name-mismatch warning (only when company is active)
+                        if _cls == "active" and _furnizor_doc and _anaf_name:
+                            _sim = _SM(None, _furnizor_doc.upper(), _anaf_name.upper()).ratio()
+                            if _sim < 0.6:
+                                st.warning(
+                                    f"⚠️ **Name mismatch** — document: `{_furnizor_doc}` "
+                                    f"vs ANAF: `{_anaf_name}` ({int(_sim * 100)}% match)"
+                                )
+
+                        # ── Sidebar ANAF summary (visible while this doc is open) ──
+                        st.sidebar.markdown("---")
+                        st.sidebar.markdown("### 🏛️ ANAF Registry")
+                        if _cls == "active":
+                            st.sidebar.success(f"✅ Active  \n{_anaf_name[:35] or '—'}")
+                        elif _cls == "inactive":
+                            st.sidebar.error(f"🚨 INACTIVE  \n{_anaf_name[:35] or '—'}")
+                        elif _cls == "notfound":
+                            st.sidebar.warning("❓ Not found in registry")
+                        else:
+                            st.sidebar.caption("⚠️ ANAF service unavailable")
+                        if _cui_val:
+                            st.sidebar.caption(f"CUI: {_cui_val}")
+                        if _anaf_addr:
+                            st.sidebar.caption(f"📍 {_anaf_addr[:60]}")
+                    # ──────────────────────────────────────────────────────
+
                     try:
-                        alert_resp = requests.get(f"{API_BASE_URL}/documents/{doc_id}/alerts", headers=headers)
+                        alert_resp = requests.get(
+                            f"{API_BASE_URL}/documents/{doc_id}/alerts",
+                            headers=headers,
+                            timeout=10,
+                        )
                         if alert_resp.status_code == 200:
                             alerts = alert_resp.json()
                             if alerts:
                                 for alert in alerts:
-                                    # Folosim un expander roșu pentru alerte critice
-                                    with st.expander(f"⚠️ Anomaly: {alert['anomaly_type']}", expanded=True):
-                                        st.write(f"**Description:** {alert['description']}")
-                                        st.write(f"**Risk Level:** {alert['risk_level'].upper()}")
+                                    # API returns 'type'/'risk'; also accept legacy key names
+                                    _atype = alert.get("type") or alert.get("anomaly_type") or "unknown"
+                                    _arisk = (alert.get("risk") or alert.get("risk_level") or "").upper()
+                                    _ascore = float(alert.get("score") or alert.get("fraud_score") or 0.0)
+                                    with st.expander(
+                                        f"⚠️ {_atype.replace('_', ' ').title()} · risk: {_arisk}",
+                                        expanded=True,
+                                    ):
+                                        st.write(f"**Description:** {alert.get('description', '—')}")
+                                        st.write(f"**Risk Level:** {_arisk}")
+                                        st.write(f"**Fraud Score:** {_ascore*100:.1f}%")
+                                        if alert.get("detected_at"):
+                                            st.caption(f"Detected: {alert['detected_at']}")
                             else:
-                                st.success("No suspicious anomalies detected.")
-                    except:
-                        st.caption("Alerts service is currently down.")
+                                st.success("✅ No suspicious anomalies detected.")
+                        else:
+                            st.caption(f"Alerts unavailable ({alert_resp.status_code})")
+                    except Exception as _ae:
+                        st.caption(f"Alerts error: {_ae}")
 
                     if doc_id:
                         try:
@@ -867,13 +1077,13 @@ if st.session_state.auth_token:
                                             # Handle base64 or URL from image_data field
                                             if isinstance(image_data, str):
                                                 if image_data.startswith(('http://', 'https://')):
-                                                    st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                                    st.image(image_data, use_column_width=True, caption=f"Page {page_num} Preview")
                                                 elif image_data.startswith('data:image'):
-                                                    st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                                    st.image(image_data, use_column_width=True, caption=f"Page {page_num} Preview")
                                                 else:
-                                                    st.image(base64.b64decode(image_data), use_container_width=True, caption=f"Page {page_num} Preview")
+                                                    st.image(base64.b64decode(image_data), use_column_width=True, caption=f"Page {page_num} Preview")
                                             else:
-                                                st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                                st.image(image_data, use_column_width=True, caption=f"Page {page_num} Preview")
                                         except Exception as e:
                                             st.warning(f"Could not display image for page {page_num}: {str(e)}")
                                     elif image_path:
@@ -885,7 +1095,7 @@ if st.session_state.auth_token:
                                                 timeout=10
                                             )
                                             if img_response.status_code == 200:
-                                                st.image(img_response.content, use_container_width=True, caption=f"Page {page_num} Preview")
+                                                st.image(img_response.content, use_column_width=True, caption=f"Page {page_num} Preview")
                                             else:
                                                 st.info(f"Page {page_num} image not available yet (processing...)")
                                         except Exception as e:
@@ -919,13 +1129,13 @@ if st.session_state.auth_token:
                                     # Handle base64 or URL from image_data field
                                     if isinstance(image_data, str):
                                         if image_data.startswith(('http://', 'https://')):
-                                            st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                            st.image(image_data, use_column_width=True, caption=f"Page {page_num} Preview")
                                         elif image_data.startswith('data:image'):
-                                            st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                            st.image(image_data, use_column_width=True, caption=f"Page {page_num} Preview")
                                         else:
-                                            st.image(base64.b64decode(image_data), use_container_width=True, caption=f"Page {page_num} Preview")
+                                            st.image(base64.b64decode(image_data), use_column_width=True, caption=f"Page {page_num} Preview")
                                     else:
-                                        st.image(image_data, use_container_width=True, caption=f"Page {page_num} Preview")
+                                        st.image(image_data, use_column_width=True, caption=f"Page {page_num} Preview")
                                 except Exception as e:
                                     st.warning(f"Could not display image: {str(e)}")
                             elif image_path:
@@ -937,7 +1147,7 @@ if st.session_state.auth_token:
                                         timeout=10
                                     )
                                     if img_response.status_code == 200:
-                                        st.image(img_response.content, use_container_width=True, caption=f"Page {page_num} Preview")
+                                        st.image(img_response.content, use_column_width=True, caption=f"Page {page_num} Preview")
                                     else:
                                         st.info("Page image not available yet (processing...)")
                                 except Exception as e:
@@ -1114,7 +1324,15 @@ if st.session_state.auth_token:
                         if not related_items:
                             st.info("No related documents for the selected filter.")
                         else:
-                            for related_doc in related_items:
+                            # De-duplicate: same doc can appear with multiple relation types
+                            _seen_related_ids: set = set()
+                            _deduped_related = []
+                            for _rd in related_items:
+                                _rid = _rd.get("id")
+                                if _rid not in _seen_related_ids:
+                                    _seen_related_ids.add(_rid)
+                                    _deduped_related.append(_rd)
+                            for _rel_idx, related_doc in enumerate(_deduped_related):
                                 with st.container(border=True):
                                     left_col, right_col = st.columns([3, 1])
 
@@ -1156,7 +1374,7 @@ if st.session_state.auth_token:
                                     with right_col:
                                         if st.button(
                                             "Open details",
-                                            key=f"related_open_{doc_id}_{related_doc.get('id')}",
+                                            key=f"related_open_{doc_id}_{related_doc.get('id')}_{_rel_idx}",
                                             use_container_width=True,
                                         ):
                                             st.session_state.selected_doc_id = str(related_doc.get("id"))

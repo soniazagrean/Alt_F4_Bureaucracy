@@ -305,6 +305,36 @@ if st.session_state.auth_token:
                                 else:
                                     error_msg = doc.get("error_message", "Unknown error")
                                     st.error(f"Processing failed: {error_msg}")
+
+                                # ── ANAF result after processing ────────────────
+                                _anaf_up = doc.get("anaf_validation") or {}
+                                _ext_up  = doc.get("extracted_data_map") or {}
+                                _cui_up  = _ext_up.get("cui") or _ext_up.get("cod_fiscal")
+                                if _cui_up or _anaf_up.get("found") is not None:
+                                    st.markdown("---")
+                                    st.markdown("#### 🏛️ ANAF Supplier Validation")
+                                    _an_name = (_anaf_up.get("company_name") or "").strip()
+                                    _an_addr = (_anaf_up.get("address") or "").strip()
+                                    if _anaf_up.get("error") and not _anaf_up.get("found"):
+                                        st.caption(f"ANAF service unavailable: {_anaf_up.get('error','')}")
+                                    elif not _anaf_up.get("found"):
+                                        st.warning(f"⚠️ CUI `{_cui_up}` not found in the ANAF registry")
+                                    elif not _anaf_up.get("is_active"):
+                                        st.error(f"🚨 **COMPANY INACTIVE** — {_an_name}  \nCUI: {_cui_up}")
+                                    else:
+                                        st.success(f"✅ **Active supplier** — {_an_name}  \nCUI: {_cui_up}")
+                                        _furnizor_up = (_ext_up.get("furnizor") or "").strip()
+                                        if _furnizor_up and _an_name:
+                                            from difflib import SequenceMatcher as _SM2
+                                            _sim2 = _SM2(None, _furnizor_up.upper(), _an_name.upper()).ratio()
+                                            if _sim2 < 0.6:
+                                                st.warning(
+                                                    f"⚠️ Name mismatch: document `{_furnizor_up}` "
+                                                    f"vs ANAF `{_an_name}` ({int(_sim2*100)}% match)"
+                                                )
+                                    if _an_addr:
+                                        st.caption(f"📍 {_an_addr}")
+                                # ────────────────────────────────────────────────
                                 break
                             
                             # Wait before next poll

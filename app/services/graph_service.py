@@ -345,6 +345,65 @@ def create_furnizor_node(cui: str, name: str, iban: Optional[str] = None) -> Dic
         return _to_dict(result.get("node"))
 
 
+def enrich_furnizor_with_anaf(cui: str, extracted_name: str) -> dict:
+    """
+    Validate a Furnizor CUI against the ANAF registry, update its Neo4j node
+    with official data, and return discrepancy indicators.
+
+    Returns:
+        {
+          "anaf_data": dict,
+          "name_mismatch": bool,
+          "inactive_company": bool,
+          "name_similarity": float,
+        }
+    """
+    from app.services.anaf_service import validate_cui, name_similarity as _sim
+    from datetime import date
+
+    anaf = validate_cui(cui)
+    result: dict = {
+        "anaf_data": anaf,
+        "name_mismatch": False,
+        "inactive_company": False,
+        "name_similarity": 1.0,
+    }
+
+    if not anaf.get("found"):
+        return result
+
+    if not anaf.get("is_active", True):
+        result["inactive_company"] = True
+
+    anaf_name = anaf.get("company_name", "")
+    if extracted_name and anaf_name:
+        sim = _sim(extracted_name, anaf_name)
+        result["name_similarity"] = sim
+        result["name_mismatch"] = sim < 0.6
+
+    # Persist official ANAF fields onto the Furnizor node in Neo4j
+    props = {
+        "anaf_name": anaf_name,
+        "anaf_is_active": anaf.get("is_active", True),
+        "anaf_address": anaf.get("address", ""),
+        "anaf_last_checked": date.today().isoformat(),
+    }
+    update_query = """
+    MERGE (f:Furnizor {CUI: $CUI})
+    SET f += $props
+    RETURN f
+    """
+    try:
+        with get_neo4j_session() as session:
+            session.execute_write(
+                lambda tx: tx.run(update_query, CUI=str(cui), props=props).single()
+            )
+    except Exception as exc:
+        logger.warning("Failed to enrich Furnizor %s in Neo4j: %s", cui, exc)
+
+    return result
+
+
 def create_dosar_node(dosar_data: Any) -> Dict[str, Any]:
     payload = _prepare_props(dosar_data, keys_to_pop=["id"])
     dosar_id = str(dosar_data["id"] if isinstance(dosar_data, dict) else getattr(dosar_data, "id"))

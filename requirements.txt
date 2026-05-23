@@ -55,4 +55,5 @@ pytest-asyncio==0.20.3
 # PDF
 PyMuPDF>=1.23.0
 pymupdf
-pillow
+pyotp==2.9.0
+qrcode[pil]==7.4.2

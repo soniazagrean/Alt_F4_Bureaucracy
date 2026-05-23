@@ -249,22 +249,64 @@ def _format_relation_label(relation_type: str) -> str:
 
 st.sidebar.markdown("### 🔑 Authentication")
 
-if "auth_token" not in st.session_state:
-    st.session_state.auth_token = None
-    st.session_state.username = None
+# Initialise auth-related session state keys
+for _k, _v in [("auth_token", None), ("username", None), ("_2fa_partial", None), ("_2fa_username", None)]:
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 
-_view_err = st.session_state.get("_login_error", "")
+_view_err    = st.session_state.get("_login_error", "")
 _view_locked = "locked" in _view_err.lower()
 
 if st.session_state.auth_token:
+    # ── Logged-in state ────────────────────────────────────────────────────────
     st.sidebar.success(f"✅ **{st.session_state.username}**")
     if st.sidebar.button("Logout", use_container_width=True):
-        st.session_state.auth_token = None
-        st.session_state.username = None
-        st.session_state.pop("_login_error", None)
+        for _k in ("auth_token", "username", "_login_error", "_2fa_partial", "_2fa_username", "_2fa_error"):
+            st.session_state.pop(_k, None)
         st.rerun()
+
+elif st.session_state._2fa_partial:
+    # ── Step 2: TOTP verification ──────────────────────────────────────────────
+    st.sidebar.info("🔐 **Two-Factor Authentication**\nOpen your authenticator app and enter the 6-digit code.")
+    _2fa_err = st.session_state.get("_2fa_error", "")
+    if _2fa_err:
+        st.sidebar.error(_2fa_err)
+
+    with st.sidebar.form("totp_form"):
+        totp_code = st.text_input("6-digit code", placeholder="123456", max_chars=6)
+        totp_submitted = st.form_submit_button("✅ Verify", use_container_width=True)
+        cancel_2fa     = st.form_submit_button("← Back", use_container_width=True)
+
+    if cancel_2fa:
+        st.session_state._2fa_partial  = None
+        st.session_state._2fa_username = None
+        st.session_state.pop("_2fa_error", None)
+        st.rerun()
+
+    if totp_submitted:
+        st.session_state.pop("_2fa_error", None)
+        try:
+            r2 = requests.post(
+                f"{API_BASE_URL}/auth/2fa/verify",
+                json={"partial_token": st.session_state._2fa_partial, "code": totp_code.strip()},
+                timeout=5,
+            )
+            if r2.status_code == 200:
+                d2 = r2.json()
+                st.session_state.auth_token    = d2["access_token"]
+                st.session_state.username      = st.session_state._2fa_username
+                st.session_state._2fa_partial  = None
+                st.session_state._2fa_username = None
+                st.rerun()
+            else:
+                st.session_state["_2fa_error"] = r2.json().get("detail", "Invalid code.")
+                st.rerun()
+        except Exception as _e:
+            st.session_state["_2fa_error"] = f"Connection error: {_e}"
+            st.rerun()
+
 else:
-    # --- lockout / error banner shown ABOVE the form ---
+    # ── Step 1: Username / password ────────────────────────────────────────────
     if _view_locked:
         st.sidebar.warning(_view_err)
         st.sidebar.caption(
@@ -274,7 +316,6 @@ else:
     elif _view_err:
         st.sidebar.error(_view_err)
 
-    # Login form — disabled while account is locked
     with st.sidebar.form("login_form_view"):
         username = st.text_input("Username", placeholder="admin", disabled=_view_locked)
         password = st.text_input("Password", type="password", disabled=_view_locked)
@@ -293,9 +334,15 @@ else:
             )
             if response.status_code == 200:
                 data = response.json()
-                st.session_state.auth_token = data.get("access_token")
-                st.session_state.username = username
-                st.rerun()
+                if data.get("requires_2fa"):
+                    # Store partial token and move to step 2
+                    st.session_state._2fa_partial  = data["partial_token"]
+                    st.session_state._2fa_username = username
+                    st.rerun()
+                else:
+                    st.session_state.auth_token = data.get("access_token")
+                    st.session_state.username   = username
+                    st.rerun()
             elif response.status_code == 429:
                 st.session_state["_login_error"] = f"🔒 {response.json().get('detail', 'Account locked.')}"
                 st.rerun()

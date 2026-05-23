@@ -26,7 +26,7 @@ COL = {
     "Document":         "#60A5FA",
     "default":          "#9CA3AF",
     "match":            "#F97316",
-    "edge":             "#64748B",
+    "edge":             "#FFFFFF",
 }
 NODE_SIZE = {
     "Person": 22, "Company": 26, "Contract": 20,
@@ -264,6 +264,7 @@ def _build_edges(edges: list[dict]) -> list[Edge]:
             target=str(e["target"]),
             label=str(e.get("label") or e.get("type") or ""),
             color=COL["edge"],
+            width=3
         )
         for e in edges
     ]

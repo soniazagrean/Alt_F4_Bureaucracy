@@ -281,6 +281,97 @@ class AuthService:
     def _refresh_blacklist_key(jti: str) -> str:
         return f"auth:refresh:blacklist:{jti}"
 
+    # ── TOTP / 2FA helpers ─────────────────────────────────────────────────────
+
+    def generate_2fa_setup(self, user: User) -> dict:
+        """Return a fresh TOTP secret + QR code PNG (base-64) for the setup screen."""
+        import base64
+        import io
+
+        import pyotp
+        import qrcode  # type: ignore
+
+        secret = pyotp.random_base32()
+        uri = pyotp.totp.TOTP(secret).provisioning_uri(
+            name=user.email,
+            issuer_name="AltF4Bureaucracy",
+        )
+        img = qrcode.make(uri)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return {"secret": secret, "qr_uri": uri, "qr_image_b64": b64}
+
+    def enable_2fa(self, user: User, db: Session, secret: str, code: str) -> None:
+        """Verify the first TOTP code and persist the secret."""
+        import pyotp
+
+        totp = pyotp.TOTP(secret)
+        if not totp.verify(code, valid_window=1):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid TOTP code — make sure your authenticator clock is synced.",
+            )
+        user.totp_secret = secret
+        user.totp_enabled = True
+        db.commit()
+
+    def disable_2fa(self, user: User, db: Session, code: str) -> None:
+        """Verify current TOTP code then remove 2FA from the account."""
+        import pyotp
+
+        if not user.totp_enabled or not user.totp_secret:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="2FA is not currently enabled on this account.",
+            )
+        totp = pyotp.TOTP(user.totp_secret)
+        if not totp.verify(code, valid_window=1):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid TOTP code.",
+            )
+        user.totp_secret = None
+        user.totp_enabled = False
+        db.commit()
+
+    def verify_totp(self, user: User, code: str) -> bool:
+        """Return True if the code matches the user's TOTP secret."""
+        import pyotp
+
+        if not user.totp_enabled or not user.totp_secret:
+            return False
+        return pyotp.TOTP(user.totp_secret).verify(code, valid_window=1)
+
+    def create_partial_token(self, user: User) -> str:
+        """Short-lived (5 min) JWT used between password-OK and TOTP verification."""
+        now = datetime.now(timezone.utc)
+        payload = {
+            "sub": str(user.id),
+            "typ": "2fa_partial",
+            "jti": str(uuid4()),
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+        }
+        return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+    def verify_partial_token(self, db: Session, token: str) -> User:
+        """Decode a partial token and return the corresponding User."""
+        payload = self._decode_token(token, expected_type="2fa_partial")
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid partial token.",
+            )
+        user = db.query(User).filter(User.id == int(user_id)).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found.",
+            )
+        return user
+
     @staticmethod
     def _resync_user_id_sequence(db: Session) -> None:
         try:

@@ -116,7 +116,7 @@ st.markdown("""
 <div class="hero-banner">
   <div class="hero-title">🏛️ NexusVault</div>
   <div class="hero-sub">Automated document intake, AI classification & archival platform</div>
-  <span class="hero-badge">⚡ Hackathon 2026 · Alt_F4_Bureaucracy</span>
+  <span class="hero-badge">⚡ Hackathon 2026 · Counter Errorists</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -206,4 +206,4 @@ for col, (icon, title, desc, delay) in zip(nc, nav_items):
         </div>""", unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
-st.caption("Alt_F4_Bureaucracy · Hackathon 2026 · Powered by FastAPI + Neo4j + Streamlit")
+st.caption("Counter Errorists · Hackathon 2026 · Powered by FastAPI + Neo4j + Streamlit")

@@ -32,54 +32,51 @@ MAX_POLLING_TIME = 300  # 5 minutes
 
 st.sidebar.markdown("## Authentication")
 
-# Always ensure the keys exist, then restore from URL query-params if needed
 if "auth_token" not in st.session_state:
     st.session_state.auth_token = None
     st.session_state.username = None
 
-if not st.session_state.auth_token:
-    _qt = st.query_params.get("token")
-    _qu = st.query_params.get("user")
-    if _qt:
-        st.session_state.auth_token = _qt
-        st.session_state.username = _qu or ""
+if st.session_state.auth_token:
+    # Logged-in state
+    st.sidebar.info(f"Logged in: **{st.session_state.username}**")
+    if st.sidebar.button("Logout"):
+        st.session_state.auth_token = None
+        st.session_state.username = None
+        st.session_state.pop("_login_error_upload", None)
+        st.rerun()
+else:
+    # Show error above form (rendered before the form widget)
+    if st.session_state.get("_login_error_upload"):
+        st.sidebar.error(st.session_state["_login_error_upload"])
 
-# Login form
-with st.sidebar.form("auth_form"):
-    username = st.text_input("Username", placeholder="testuser")
-    password = st.text_input("Password", placeholder="password", type="password")
+    # Login form — only shown when not authenticated
+    with st.sidebar.form("login_form_upload"):
+        username = st.text_input("Username", placeholder="admin")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login", use_container_width=True)
 
-    if st.form_submit_button("Login"):
+    if submitted:
+        st.session_state.pop("_login_error_upload", None)
         try:
             response = requests.post(
                 f"{API_BASE_URL}/auth/login",
                 json={"username": username, "password": password},
-                timeout=5
+                timeout=5,
             )
-
             if response.status_code == 200:
                 data = response.json()
                 st.session_state.auth_token = data.get("access_token")
                 st.session_state.username = username
-                st.query_params["token"] = data.get("access_token")
-                st.query_params["user"] = username
-                st.sidebar.success(f"Logged in as {username}")
+                st.rerun()
+            elif response.status_code == 429:
+                st.session_state["_login_error_upload"] = "🔒 " + response.json().get("detail", "Account locked.")
+                st.rerun()
             else:
-                st.sidebar.error("Login failed")
+                st.session_state["_login_error_upload"] = response.json().get("detail", "Login failed.")
+                st.rerun()
         except Exception as e:
-            st.sidebar.error(f"Connection error: {str(e)}")
-
-# Show current user
-if st.session_state.get("auth_token"):
-    st.sidebar.info(f"Logged in: **{st.session_state.username}**")
-
-    if st.sidebar.button("Logout"):
-        st.session_state.auth_token = None
-        st.session_state.username = None
-        st.query_params.clear()
-        st.rerun()
-else:
-    st.sidebar.warning("Please login to upload documents")
+            st.session_state["_login_error_upload"] = f"Connection error: {e}"
+            st.rerun()
 
 # ============================================================================
 # MAIN CONTENT - Upload Form

@@ -78,16 +78,62 @@ class AuthService:
         db.refresh(user)
         return user
 
+    # Lockout policy constants
+    MAX_FAILED_ATTEMPTS = 5
+    LOCKOUT_MINUTES = 15
+
     def authenticate_user(self, db: Session, username: str, password: str) -> User:
+        now = datetime.now(timezone.utc)
+
         user = db.query(User).filter(User.username == username).first()
+
+        # ── Lockout check ──────────────────────────────────────────────────────
+        if user and user.locked_until is not None:
+            lu = user.locked_until
+            if lu.tzinfo is None:
+                lu = lu.replace(tzinfo=timezone.utc)
+            if lu > now:
+                remaining = int((lu - now).total_seconds())
+                mins, secs = divmod(remaining, 60)
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Account locked. Try again in {mins}m {secs}s.",
+                )
+            # Expired — clear
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            db.commit()
+
+        # ── Credential check ───────────────────────────────────────────────────
         if not user or not user.verify_password(password):
+            if user:
+                user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+                if user.failed_login_attempts >= self.MAX_FAILED_ATTEMPTS:
+                    user.locked_until = now + timedelta(minutes=self.LOCKOUT_MINUTES)
+                    db.commit()
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail=f"Too many failed attempts. Account locked for {self.LOCKOUT_MINUTES} minutes.",
+                    )
+                db.commit()
+                left = self.MAX_FAILED_ATTEMPTS - user.failed_login_attempts
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Invalid credentials. {left} attempt(s) left before lockout.",
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid username or password",
+                detail="Invalid username or password.",
             )
 
         if not user.is_active:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
+
+        # ── Success: reset counter ─────────────────────────────────────────────
+        if user.failed_login_attempts:
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            db.commit()
 
         return user
 

@@ -32,16 +32,23 @@ MAX_POLLING_TIME = 300  # 5 minutes
 
 st.sidebar.markdown("## Authentication")
 
-# Check if token exists in session
+# Always ensure the keys exist, then restore from URL query-params if needed
 if "auth_token" not in st.session_state:
     st.session_state.auth_token = None
     st.session_state.username = None
+
+if not st.session_state.auth_token:
+    _qt = st.query_params.get("token")
+    _qu = st.query_params.get("user")
+    if _qt:
+        st.session_state.auth_token = _qt
+        st.session_state.username = _qu or ""
 
 # Login form
 with st.sidebar.form("auth_form"):
     username = st.text_input("Username", placeholder="testuser")
     password = st.text_input("Password", placeholder="password", type="password")
-    
+
     if st.form_submit_button("Login"):
         try:
             response = requests.post(
@@ -49,11 +56,13 @@ with st.sidebar.form("auth_form"):
                 json={"username": username, "password": password},
                 timeout=5
             )
-            
+
             if response.status_code == 200:
                 data = response.json()
                 st.session_state.auth_token = data.get("access_token")
                 st.session_state.username = username
+                st.query_params["token"] = data.get("access_token")
+                st.query_params["user"] = username
                 st.sidebar.success(f"Logged in as {username}")
             else:
                 st.sidebar.error("Login failed")
@@ -61,12 +70,13 @@ with st.sidebar.form("auth_form"):
             st.sidebar.error(f"Connection error: {str(e)}")
 
 # Show current user
-if st.session_state.auth_token:
+if st.session_state.get("auth_token"):
     st.sidebar.info(f"Logged in: **{st.session_state.username}**")
-    
+
     if st.sidebar.button("Logout"):
         st.session_state.auth_token = None
         st.session_state.username = None
+        st.query_params.clear()
         st.rerun()
 else:
     st.sidebar.warning("Please login to upload documents")
@@ -298,6 +308,36 @@ if st.session_state.auth_token:
                                 else:
                                     error_msg = doc.get("error_message", "Unknown error")
                                     st.error(f"Processing failed: {error_msg}")
+
+                                # ── ANAF result after processing ────────────────
+                                _anaf_up = doc.get("anaf_validation") or {}
+                                _ext_up  = doc.get("extracted_data_map") or {}
+                                _cui_up  = _ext_up.get("cui") or _ext_up.get("cod_fiscal")
+                                if _cui_up or _anaf_up.get("found") is not None:
+                                    st.markdown("---")
+                                    st.markdown("#### 🏛️ ANAF Supplier Validation")
+                                    _an_name = (_anaf_up.get("company_name") or "").strip()
+                                    _an_addr = (_anaf_up.get("address") or "").strip()
+                                    if _anaf_up.get("error") and not _anaf_up.get("found"):
+                                        st.caption(f"ANAF service unavailable: {_anaf_up.get('error','')}")
+                                    elif not _anaf_up.get("found"):
+                                        st.warning(f"⚠️ CUI `{_cui_up}` not found in the ANAF registry")
+                                    elif not _anaf_up.get("is_active"):
+                                        st.error(f"🚨 **COMPANY INACTIVE** — {_an_name}  \nCUI: {_cui_up}")
+                                    else:
+                                        st.success(f"✅ **Active supplier** — {_an_name}  \nCUI: {_cui_up}")
+                                        _furnizor_up = (_ext_up.get("furnizor") or "").strip()
+                                        if _furnizor_up and _an_name:
+                                            from difflib import SequenceMatcher as _SM2
+                                            _sim2 = _SM2(None, _furnizor_up.upper(), _an_name.upper()).ratio()
+                                            if _sim2 < 0.6:
+                                                st.warning(
+                                                    f"⚠️ Name mismatch: document `{_furnizor_up}` "
+                                                    f"vs ANAF `{_an_name}` ({int(_sim2*100)}% match)"
+                                                )
+                                    if _an_addr:
+                                        st.caption(f"📍 {_an_addr}")
+                                # ────────────────────────────────────────────────
                                 break
                             
                             # Wait before next poll

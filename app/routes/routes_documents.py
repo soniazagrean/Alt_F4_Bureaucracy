@@ -628,6 +628,18 @@ async def get_document(
             }
         )
     
+    # ANAF supplier validation (best-effort — never raises to the caller)
+    anaf_validation = None
+    try:
+        from app.services.anaf_service import validate_cui
+        # Schema stores field as "CUI" (uppercase); normalise before lookup
+        _cui = (extracted_data_dict.get("CUI") or extracted_data_dict.get("cui")
+                or extracted_data_dict.get("COD_FISCAL") or extracted_data_dict.get("cod_fiscal"))
+        if _cui:
+            anaf_validation = validate_cui(_cui)
+    except Exception:
+        anaf_validation = {"found": False, "error": "ANAF service unavailable"}
+
     # Get nomenclator suggestion if available
     nomenclator_suggestion = None
     if doc.nomenclator_id:
@@ -692,6 +704,7 @@ async def get_document(
         "currency": doc.currency,
         "status": doc.status.value if hasattr(doc.status, "value") else str(doc.status),
         "fraud_score": doc.fraud_score,
+        "anaf_validation": anaf_validation,
         "confidence": doc.confidence,
         "file_path": doc.file_path,
         "file_size": doc.file_size,

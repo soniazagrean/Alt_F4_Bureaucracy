@@ -94,7 +94,8 @@ def _build_agraph_nodes(nodes: list[dict[str, Any]]) -> list[Node]:
             color = COLOR_PERSON_RISK
             size = 36
 
-        result.append(Node(id=node_id, label=label, color=color, size=size))
+        result.append(Node(id=node_id, label=label, color=color, size=size,
+                          font={"color": "white", "size": 14, "strokeWidth": 3, "strokeColor": "#00000088"}))
     return result
 
 

@@ -79,25 +79,25 @@ services:
     restart: always
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
-      NEO4J_server_memory_heap_initial__size: 512m
-      NEO4J_server_memory_heap_max__size: 1024m
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
     # NO ports — internal only
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
     healthcheck:
-      test: ["CMD-SHELL", "wget -O /dev/null -q http://localhost:7474 || exit 1"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
+      test: ["CMD-SHELL", "neo4j status | grep -q running || exit 1"]
+      interval: 15s
+      timeout: 15s
+      retries: 15
+      start_period: 120s   # neo4j is slow to init on first boot
     networks:
       - backend
     deploy:
       resources:
         limits:
           cpus: '1.0'
-          memory: 1G
+          memory: 1G       # safe now: heap capped at 512m, rest for JVM + page cache
     security_opt:
       - no-new-privileges:true
 

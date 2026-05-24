@@ -78,7 +78,7 @@ services:
     container_name: alt_neo4j
     restart: always
     environment:
-      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_AUTH: ${NEO4J_AUTH}
       NEO4J_server_memory_heap_initial__size: 256m
       NEO4J_server_memory_heap_max__size: 512m
     # NO ports — internal only

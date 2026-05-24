@@ -1,0 +1,375 @@
+# ============================================================================
+# Alt_F4_Bureaucracy — Production Docker Compose (Hardened)
+# Secure deployment with Nginx reverse proxy + Certbot SSL
+# ============================================================================
+
+services:
+
+  # ==========================================================================
+  # Nginx Reverse Proxy (SSL termination + rate limiting)
+  # ==========================================================================
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: alt_nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certbot/conf:/etc/letsencrypt:ro
+      - ./nginx/certbot/www:/var/www/certbot:ro
+    depends_on:
+      - fastapi
+      - streamlit
+    networks:
+      - frontend
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # ==========================================================================
+  # Certbot (automatic SSL renewal)
+  # ==========================================================================
+  certbot:
+    image: certbot/certbot
+    container_name: alt_certbot
+    volumes:
+      - ./nginx/certbot/conf:/etc/letsencrypt
+      - ./nginx/certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+  # ==========================================================================
+  # PostgreSQL (INTERNAL ONLY)
+  # ==========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: alt_postgres
+    restart: always
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+    # NO ports — internal only
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+
+  # ==========================================================================
+  # Neo4j Graph Database (INTERNAL ONLY)
+  # ==========================================================================
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: alt_neo4j
+    restart: always
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1024m
+    # NO ports — internal only
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -O /dev/null -q http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    security_opt:
+      - no-new-privileges:true
+
+  # ==========================================================================
+  # Redis (INTERNAL ONLY)
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: alt_redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    # NO ports — internal only
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true
+
+  # ==========================================================================
+  # MeiliSearch (INTERNAL ONLY)
+  # ==========================================================================
+  meilisearch:
+    image: getmeili/meilisearch:v1.7.2
+    container_name: alt_meilisearch
+    restart: always
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_ENV: production
+    # NO ports — internal only
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+
+  # ==========================================================================
+  # MinIO Object Storage (INTERNAL ONLY)
+  # ==========================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: alt_minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    # NO ports — internal only
+    volumes:
+      - minio_data:/minio_data
+    command: server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+
+  # ==========================================================================
+  # FastAPI Backend (NO public port — only accessible via Nginx)
+  # ==========================================================================
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile.fastapi
+    container_name: alt_fastapi
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST:     postgres
+      POSTGRES_PORT:     5432
+      REDIS_HOST:        redis
+      REDIS_PORT:        6379
+      NEO4J_URI:         bolt://neo4j:7687
+      MEILI_HOST:        meilisearch
+      MEILISEARCH_PORT:  7700
+      MINIO_ENDPOINT:    minio:9000
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - temp_data:/tmp
+    networks:
+      - frontend
+      - backend
+    # No --reload in production
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  # ==========================================================================
+  # Celery Worker
+  # ==========================================================================
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    container_name: alt_celery_worker
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST:         postgres
+      POSTGRES_PORT:         5432
+      REDIS_HOST:            redis
+      REDIS_PORT:            6379
+      NEO4J_URI:             bolt://neo4j:7687
+      CELERY_BROKER_URL:     redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/1
+      MINIO_ENDPOINT:        minio:9000
+      MEILI_HOST:            meilisearch
+      MEILISEARCH_PORT:      7700
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - temp_data:/tmp
+    networks:
+      - backend
+    command: celery -A app.celery_app worker --loglevel=info
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    security_opt:
+      - no-new-privileges:true
+
+  # ==========================================================================
+  # Celery Beat Scheduler
+  # ==========================================================================
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    container_name: alt_celery_beat
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_URL:          postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL:             redis://:${REDIS_PASSWORD}@redis:6379/0
+      NEO4J_URI:             bolt://neo4j:7687
+      CELERY_BROKER_URL:     redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/1
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - backend
+    command: celery -A app.celery_app beat --loglevel=info
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+    security_opt:
+      - no-new-privileges:true
+
+  # ==========================================================================
+  # Streamlit UI (NO public port — only accessible via Nginx)
+  # ==========================================================================
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: alt_streamlit
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_URL:     postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL:        redis://:${REDIS_PASSWORD}@redis:6379/0
+      NEO4J_URI:        bolt://neo4j:7687
+      MEILISEARCH_URL:  http://meilisearch:7700
+      MINIO_ENDPOINT:   minio:9000
+      FASTAPI_BASE_URL: http://fastapi:8000
+    expose:
+      - "8501"
+    depends_on:
+      - fastapi
+    networks:
+      - frontend
+      - backend
+    command: streamlit run /streamlit_app/main.py --server.port=8501 --server.address=0.0.0.0 --server.baseUrlPath=/ui
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+# ==========================================================================
+# Volumes
+# ==========================================================================
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
+  meilisearch_data:
+  minio_data:
+  temp_data:
+
+# ==========================================================================
+# Networks — isolate all infra from the internet
+# ==========================================================================
+networks:
+  frontend:
+    name: alt_frontend
+    driver: bridge
+  backend:
+    name: alt_backend
+    driver: bridge
+    internal: true  # No internet access — all infra is fully isolated

@@ -270,6 +270,7 @@ services:
       - temp_data:/tmp
     networks:
       - backend
+      - frontend   # needs internet access for OpenAI API calls
     command: celery -A app.celery_app worker --loglevel=info
     deploy:
       resources:
@@ -301,6 +302,7 @@ services:
       - postgres
     networks:
       - backend
+      - frontend   # needs internet access for OpenAI API calls
     command: celery -A app.celery_app beat --loglevel=info
     deploy:
       resources:
